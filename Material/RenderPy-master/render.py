@@ -1,5 +1,8 @@
 from image import Image, Color
 from model import Model
+from model import Matrix4
+from model import Vec4
+import math
 from shape import Point, Line, Triangle
 from vector import Vector
 import pygame
@@ -22,6 +25,8 @@ zBuffer = [-float('inf')] * width * height
 # Load the model
 model = Model('data/headset.obj')
 model.normalizeGeometry()
+model.setPosition(0, 0, -12)
+# model.setRotation(90, 0, 90)
 
 def getOrthographicProjection(x, y, z):
 	# Convert vertex from world space to screen space
@@ -30,6 +35,31 @@ def getOrthographicProjection(x, y, z):
 	screenY = int((y+1.0)*height/2.0)
 
 	return screenX, screenY
+
+def getPerspectiveProjection(x, y, z, width, height):
+    # Set up perspective parameters
+    fov = math.pi / 3.0  # 60-degree field of view
+    aspect = width / height
+    near = 0.1     # Near clipping plane
+    far = 100.0    # Far clipping plane
+    
+    # Create the perspective matrix
+    perspective_matrix = Matrix4.perspective(fov, aspect, near, far)
+    
+    # Create a vector in homogeneous coordinates
+    point = Vec4(x, y, z, 1.0)
+    
+    # Apply perspective transformation
+    projected = perspective_matrix.multiply(point)
+    
+    # Perform perspective division
+    normalized = projected.perspectiveDivide()
+    
+    # Convert to screen coordinates
+    screenX = int((normalized.x + 1.0) * width / 2.0)
+    screenY = int((normalized.y + 1.0) * height / 2.0)
+    
+    return screenX, screenY
 
 def getVertexNormal(vertIndex, faceNormalsByVertex):
 	# Compute vertex normals by averaging the normals of adjacent faces
@@ -80,7 +110,10 @@ def update_display(image):
 # Calculate face normals
 faceNormals = {}
 for face in model.faces:
-	p0, p1, p2 = [model.vertices[i] for i in face]
+	# p0, p1, p2 = [model.vertices[i] for i in face]
+	p0 = model.getTransformedVertex(face[0])
+	p1 = model.getTransformedVertex(face[1])
+	p2 = model.getTransformedVertex(face[2])
 	faceNormal = (p2-p0).cross(p1-p0).normalize()
 
 	for i in face:
@@ -103,7 +136,10 @@ for face in model.faces:
 	if not running:
 		break
 
-	p0, p1, p2 = [model.vertices[i] for i in face]
+	# p0, p1, p2 = [model.vertices[i] for i in face]
+	p0 = model.getTransformedVertex(face[0])
+	p1 = model.getTransformedVertex(face[1])
+	p2 = model.getTransformedVertex(face[2])
 	n0, n1, n2 = [vertexNormals[i] for i in face]
 
 	# Define the light direction
@@ -122,8 +158,7 @@ for face in model.faces:
 		if intensity < 0:
 			cull = True # Back face culling is disabled in this version
 			
-
-		screenX, screenY = getOrthographicProjection(p.x, p.y, p.z)
+		screenX, screenY = getPerspectiveProjection(p.x, p.y, p.z, width, height)
 		transformedPoints.append(Point(screenX, screenY, p.z, Color(intensity*255, intensity*255, intensity*255, 255)))
 
 	if not cull:
