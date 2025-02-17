@@ -32,7 +32,6 @@ class Matrix4:
     
     @staticmethod
     def rotation_x(angle):
-        """Creates a rotation matrix around X axis"""
         m = Matrix4()
         c = cos(angle)
         s = sin(angle)
@@ -41,6 +40,27 @@ class Matrix4:
         m.data[2][1] = s
         m.data[2][2] = c
         return m
+    
+    def rotation_y(angle):
+        matrix = Matrix4()
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+        matrix.data[0][0] = cos_a
+        matrix.data[0][2] = sin_a
+        matrix.data[2][0] = -sin_a
+        matrix.data[2][2] = cos_a
+        return matrix
+    
+    @staticmethod
+    def rotation_z(angle):
+        matrix = Matrix4()
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+        matrix.data[0][0] = cos_a
+        matrix.data[0][1] = -sin_a
+        matrix.data[1][0] = sin_a
+        matrix.data[1][1] = cos_a
+        return matrix
     
     @staticmethod
     def scaling(s):
