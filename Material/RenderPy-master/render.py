@@ -2,10 +2,19 @@ from image import Image, Color
 from model import Model
 from shape import Point, Line, Triangle
 from vector import Vector
+import pygame
+import numpy as np
+
+pygame.init()
 
 width = 512
 height = 512
 image = Image(width, height, Color(255, 255, 255, 255))
+
+screen = pygame.display.set_mode((width, height))
+pygame.display.set_caption("3D Renderer")
+
+buffer_surface = pygame.Surface((width, height))
 
 # Init z-buffer
 zBuffer = [-float('inf')] * width * height
@@ -30,6 +39,44 @@ def getVertexNormal(vertIndex, faceNormalsByVertex):
 
 	return normal / len(faceNormalsByVertex[vertIndex])
 
+def update_display(image):
+    """
+    Updates the display with the current state of the frame buffer.
+    This function accounts for the Image class's specific buffer format
+    where each row starts with a null byte followed by RGBA values.
+    """
+    # Convert the image buffer to a Pygame surface
+    pixel_array = pygame.surfarray.pixels3d(buffer_surface)
+    
+    for y in range(height):
+        for x in range(width):
+            # Calculate the index in the buffer, accounting for the row format
+            # Each row has a null byte at the start, so we need to add y to account for these bytes
+            flipY = (height - y - 1)  # Flip Y coordinate to match Image class convention
+            index = (flipY * width + x) * 4 + flipY + 1  # +1 for the null byte at start of row
+            
+            # Extract RGB values from the buffer (ignore alpha)
+            r = image.buffer[index]
+            g = image.buffer[index + 1]
+            b = image.buffer[index + 2]
+            
+            # Update the pixel array
+            pixel_array[x, y] = (r, g, b)
+    
+    del pixel_array  # Release the surface lock
+    
+    # Blit the buffer to the screen
+    screen.blit(buffer_surface, (0, 0))
+    pygame.display.flip()
+
+    # Handle events
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            return False
+    return True
+
+
 # Calculate face normals
 faceNormals = {}
 for face in model.faces:
@@ -49,7 +96,13 @@ for vertIndex in range(len(model.vertices)):
 	vertexNormals.append(vertNorm)
 
 # Render the image iterating through faces
+running = True
+face_count = 0
+
 for face in model.faces:
+	if not running:
+		break
+
 	p0, p1, p2 = [model.vertices[i] for i in face]
 	n0, n1, n2 = [vertexNormals[i] for i in face]
 
@@ -76,4 +129,12 @@ for face in model.faces:
 	if not cull:
 		Triangle(transformedPoints[0], transformedPoints[1], transformedPoints[2]).draw_faster(image, zBuffer)
 
+	face_count += 1
+	if face[0] % 10 == 0:  # Adjust this number to control update frequency
+		running = update_display(image)
+
+while running:
+	running = update_display(image)
+
+pygame.quit()
 image.saveAsPNG("image.png")
