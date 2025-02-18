@@ -2,6 +2,8 @@ from image import Image, Color
 from model import Model
 from model import Matrix4
 from model import Vec4
+from model import SensorData
+from model import SensorDataParser
 import math
 from shape import Point, Line, Triangle
 from vector import Vector
@@ -27,6 +29,17 @@ model = Model('data/headset.obj')
 model.normalizeGeometry()
 model.setPosition(0, 0, -12)
 # model.setRotation(90, 0, 90)
+
+def load_csv_data(file_path):
+	parser = SensorDataParser(file_path)
+	sensor_data = parser.parse()
+
+	print("Loaded sensor data from CSV file")
+
+	print("Number of sensor data entries: ", len(sensor_data))
+	print("First sensor data entry: ", sensor_data[0])
+
+	return sensor_data
 
 def getOrthographicProjection(x, y, z):
 	# Convert vertex from world space to screen space
@@ -106,6 +119,7 @@ def update_display(image):
             return False
     return True
 
+csv_contents = load_csv_data("../IMUData.csv")
 
 # Calculate face normals
 faceNormals = {}

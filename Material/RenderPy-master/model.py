@@ -6,6 +6,164 @@
 from vector import Vector
 from math import sin, cos
 import math
+import pandas as pd
+import numpy as np
+from dataclasses import dataclass
+from typing import List, Tuple
+
+@dataclass
+class SensorData:
+    time: float
+    gyroscope: Tuple[float, float, float]
+    accelerometer: Tuple[float, float, float]
+    magnetometer: Tuple[float, float, float]
+
+@dataclass
+class Quaternion:
+    w: float
+    x: float
+    y: float
+    z: float
+
+class SensorDataParser:
+    def __init__(self, csv_path: str):
+        """
+        Initialize the parser with the path to the CSV file.
+        
+        Args:
+            csv_path (str): Path to the sensor data CSV file
+        """
+        self.csv_path = csv_path
+        self.data = None
+
+    def convert_rotational_rate_to_radians_sec(self, degrees: float) -> float:
+        return degrees * (np.pi / 180.0)
+    
+    def _euler_to_quaternion(self, roll: float, pitch: float, yaw: float) -> Quaternion:
+        """
+        Convert Euler angles to quaternion.
+        
+        Args:
+            roll (float): Rotation around x-axis in radians
+            pitch (float): Rotation around y-axis in radians
+            yaw (float): Rotation around z-axis in radians
+            
+        Returns:
+            Quaternion: Quaternion representation of the rotation
+        """
+        # Calculate half angles
+        cr = np.cos(roll * 0.5)
+        sr = np.sin(roll * 0.5)
+        cp = np.cos(pitch * 0.5)
+        sp = np.sin(pitch * 0.5)
+        cy = np.cos(yaw * 0.5)
+        sy = np.sin(yaw * 0.5)
+        
+        # Calculate quaternion components
+        w = cr * cp * cy + sr * sp * sy
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+        
+        return Quaternion(w, x, y, z)
+        
+    def _quaternion_to_euler(self, q: Quaternion) -> Tuple[float, float, float]:
+        sinr_cosp = 2.0 * (q.w * q.x + q.y * q.z)
+        cosr_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
+        roll = np.arctan2(sinr_cosp, cosr_cosp)
+        
+        # Pitch (rotation around Y axis)
+        sinp = 2.0 * (q.w * q.y - q.z * q.x)
+        if abs(sinp) >= 1:
+            # Handle edge case when sinp = ±1 (gimbal lock)
+            pitch = np.copysign(np.pi / 2, sinp)
+        else:
+            pitch = np.arcsin(sinp)
+        
+        # Yaw (rotation around Z axis)
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw = np.arctan2(siny_cosp, cosy_cosp)
+        
+        return (roll, pitch, yaw)
+    
+    def _quaternion_conjugate(self, q: Quaternion) -> Quaternion:
+        return Quaternion(q.w, -q.x, -q.y, -q.z)
+    
+    def _quaternion_multiply(self, q1: Quaternion, q2: Quaternion) -> Quaternion:
+        w = q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z
+        x = q1.x * q2.w + q1.w * q2.x + q1.y * q2.z - q1.z * q2.y
+        y = q1.y * q2.w + q1.w * q2.y + q1.z * q2.x - q1.x * q2.z
+        z = q1.z * q2.w + q1.w * q2.z + q1.x * q2.y - q1.y * q2.x
+        return Quaternion(w, x, y, z)
+
+    def parse(self) -> List[SensorData]:
+        """
+        Parse the CSV file and return a list of SensorData objects.
+        
+        Returns:
+            List[SensorData]: List of parsed sensor data entries
+        """
+        try:
+            df = pd.read_csv(self.csv_path)
+            df.columns = df.columns.str.strip()
+            sensor_data_list = []
+            
+            for _, row in df.iterrows():
+                sensor_data = SensorData(
+                    time=row['time'],
+                    gyroscope=(
+                        self.convert_rotational_rate_to_radians_sec(row['gyroscope.X']),
+                        self.convert_rotational_rate_to_radians_sec(row['gyroscope.Y']),
+                        self.convert_rotational_rate_to_radians_sec(row['gyroscope.Z'])
+                    ),
+                    accelerometer=(
+                        row['accelerometer.X'],
+                        row['accelerometer.Y'],
+                        row['accelerometer.Z']
+                    ),
+                    magnetometer=(
+                        row['magnetometer.X'],
+                        row['magnetometer.Y'],
+                        row['magnetometer.Z']
+                    )
+                )
+                sensor_data_list.append(sensor_data)
+            
+            self.data = sensor_data_list
+            return sensor_data_list
+        
+        except Exception as e:
+            raise Exception(f"Error parsing CSV file: {str(e)}")
+    
+    def get_sensor_stats(self) -> dict:
+        """
+        Calculate basic statistics for each sensor.
+        
+        Returns:
+            dict: Dictionary containing mean, min, max values for each sensor
+        """
+        if self.data is None:
+            raise Exception("Data not parsed yet. Call parse() first.")
+            
+        stats = {
+            'gyroscope': {
+                'mean': np.mean([d.gyroscope for d in self.data], axis=0),
+                'min': np.min([d.gyroscope for d in self.data], axis=0),
+                'max': np.max([d.gyroscope for d in self.data], axis=0)
+            },
+            'accelerometer': {
+                'mean': np.mean([d.accelerometer for d in self.data], axis=0),
+                'min': np.min([d.accelerometer for d in self.data], axis=0),
+                'max': np.max([d.accelerometer for d in self.data], axis=0)
+            },
+            'magnetometer': {
+                'mean': np.mean([d.magnetometer for d in self.data], axis=0),
+                'min': np.min([d.magnetometer for d in self.data], axis=0),
+                'max': np.max([d.magnetometer for d in self.data], axis=0)
+            }
+        }
+        return stats
 
 class Matrix4:
     """
