@@ -124,7 +124,6 @@ csv_contents = load_csv_data("../IMUData.csv")
 # Calculate face normals
 faceNormals = {}
 for face in model.faces:
-	# p0, p1, p2 = [model.vertices[i] for i in face]
 	p0 = model.getTransformedVertex(face[0])
 	p1 = model.getTransformedVertex(face[1])
 	p2 = model.getTransformedVertex(face[2])
@@ -173,6 +172,7 @@ for face in model.faces:
 			cull = True # Back face culling is disabled in this version
 			
 		screenX, screenY = getPerspectiveProjection(p.x, p.y, p.z, width, height)
+		
 		transformedPoints.append(Point(screenX, screenY, p.z, Color(intensity*255, intensity*255, intensity*255, 255)))
 
 	if not cull:
