@@ -1,3 +1,4 @@
+from matplotlib import pyplot as plt
 from image import Image, Color
 from model import DeadReckoningFilter, Model
 from model import Matrix4
@@ -119,9 +120,139 @@ def update_display(image):
             return False
     return True
 
+# Dead reckoning filter test
+def test_alpha_values(csv_contents, model, image_width, image_height):
+    """
+    Test different alpha values for the complementary filter and compare results.
+    
+    Args:
+        csv_contents: List of sensor data readings
+        model: 3D model to visualize
+        image_width, image_height: Dimensions for rendering
+    """
+    # Define a range of alpha values to test
+    alpha_values = [0.5, 0.7, 0.9, 0.95, 0.98, 0.99]
+    
+    # For each alpha value, we'll record orientation data over time
+    results = {alpha: [] for alpha in alpha_values}
+    
+    # We'll use a subset of the data for quicker testing
+    test_duration = min(len(csv_contents), 1000)  # Limit to 1000 samples
+    
+    print("Testing alpha values...")
+    
+    # Test each alpha value
+    for alpha in alpha_values:
+        print(f"\nTesting alpha = {alpha}")
+        
+        # Create a new filter with this alpha value
+        dr_filter = DeadReckoningFilter(alpha=alpha)
+        
+        # Calibrate using first 100 samples (assuming the device is at rest)
+        dr_filter.calibrate(csv_contents[:100])
+        
+        # Process all sensor data
+        for i in range(test_duration):
+            sensor_data = csv_contents[i]
+            
+            # Update the filter and record orientation
+            position, orientation = dr_filter.update(sensor_data)
+            
+            # Convert quaternion to Euler angles (easier to interpret)
+            roll, pitch, yaw = dr_filter.get_euler_angles()
+            
+            # Record results
+            results[alpha].append({
+                'time': sensor_data.time,
+                'roll': math.degrees(roll),
+                'pitch': math.degrees(pitch),
+                'yaw': math.degrees(yaw)
+            })
+            
+            # Print progress
+            if i % 100 == 0:
+                print(f"  Processed {i}/{test_duration} samples")
+    
+    # Analyze the results
+    analyze_alpha_results(results)
+    
+    # Visualize results (save charts for each alpha)
+    for alpha in alpha_values:
+        visualize_filter_results(results[alpha], f"alpha_{alpha:.2f}")
+    
+    return results
+
+def analyze_alpha_results(results):
+    """Analyze and print statistics about different alpha values"""
+    for alpha, data in results.items():
+        # Calculate standard deviation of orientation (higher means more variation)
+        roll_values = [entry['roll'] for entry in data]
+        pitch_values = [entry['pitch'] for entry in data]
+        yaw_values = [entry['yaw'] for entry in data]
+        
+        roll_std = np.std(roll_values)
+        pitch_std = np.std(pitch_values)
+        yaw_std = np.std(yaw_values)
+        
+        # Calculate average rate of change (smoothness measure)
+        roll_changes = [abs(roll_values[i] - roll_values[i-1]) for i in range(1, len(roll_values))]
+        pitch_changes = [abs(pitch_values[i] - pitch_values[i-1]) for i in range(1, len(pitch_values))]
+        yaw_changes = [abs(yaw_values[i] - yaw_values[i-1]) for i in range(1, len(yaw_values))]
+        
+        avg_roll_change = sum(roll_changes) / len(roll_changes)
+        avg_pitch_change = sum(pitch_changes) / len(pitch_changes)
+        avg_yaw_change = sum(yaw_changes) / len(yaw_changes)
+        
+        print(f"\nResults for alpha = {alpha}:")
+        print(f"  Standard deviations: Roll={roll_std:.2f}°, Pitch={pitch_std:.2f}°, Yaw={yaw_std:.2f}°")
+        print(f"  Average changes per step: Roll={avg_roll_change:.4f}°, Pitch={avg_pitch_change:.4f}°, Yaw={avg_yaw_change:.4f}°")
+
+def visualize_filter_results(data, filename_prefix):
+    """Create visualization of filter results and save to file"""
+    # Extract data
+    times = [entry['time'] for entry in data]
+    rolls = [entry['roll'] for entry in data]
+    pitches = [entry['pitch'] for entry in data]
+    yaws = [entry['yaw'] for entry in data]
+    
+    # Create figure with subplots
+    plt.figure(figsize=(12, 8))
+    
+    # Plot roll
+    plt.subplot(3, 1, 1)
+    plt.plot(times, rolls, 'r-')
+    plt.title('Roll over Time')
+    plt.ylabel('Degrees')
+    plt.grid(True)
+    
+    # Plot pitch
+    plt.subplot(3, 1, 2)
+    plt.plot(times, pitches, 'g-')
+    plt.title('Pitch over Time')
+    plt.ylabel('Degrees')
+    plt.grid(True)
+    
+    # Plot yaw
+    plt.subplot(3, 1, 3)
+    plt.plot(times, yaws, 'b-')
+    plt.title('Yaw over Time')
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Degrees')
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(f"{filename_prefix}_orientation.png")
+    plt.close()
+
 csv_contents = load_csv_data("../IMUData.csv")
 
-dr_filter = DeadReckoningFilter()
+test_result = test_alpha_values(csv_contents, model, width, height)
+
+print(test_result)
+
+best_alpha = 0.99
+
+dr_filter = DeadReckoningFilter(alpha=best_alpha)
 # Calibrate using first 100 samples (assuming the device is at rest)
 dr_filter.calibrate(csv_contents[:100])
 

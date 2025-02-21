@@ -482,13 +482,172 @@ class Model(object):
         self.updateTransform()
 
 class DeadReckoningFilter:
-    def __init__(self):
+    def __init__(self, alpha=0.98):
         self.orientation = Quaternion(1, 0, 0, 0)
         self.position = Vector(0, 0, 0)
         self.last_time = None
         self.gyro_bias = (0, 0, 0)
+        self.alpha = alpha
 
     def update(self, sensor_data):
+        """
+        Update position and orientation based on sensor readings.
+        
+        Args:
+            sensor_data (SensorData): Current sensor reading
+        
+        Returns:
+            Tuple[Vector, Quaternion]: Updated position and orientation
+        """
+        # Initialize time on first update
+        if self.last_time is None:
+            self.last_time = sensor_data.time
+            return self.position, self.orientation
+    
+        # Calculate time delta
+        dt = sensor_data.time - self.last_time
+        self.last_time = sensor_data.time
+        
+        # Skip if dt is too small (prevent division by zero)
+        if dt < 0.001:
+            return self.position, self.orientation
+            
+        # Bias-corrected angular velocity
+        gyro_x = sensor_data.gyroscope[0] - self.gyro_bias[0]
+        gyro_y = sensor_data.gyroscope[1] - self.gyro_bias[1]
+        gyro_z = sensor_data.gyroscope[2] - self.gyro_bias[2]
+        
+        # -------------------
+        # GYROSCOPE INTEGRATION
+        # -------------------
+        
+        # Convert gyroscope readings to quaternion rate of change
+        q_dot = Quaternion(
+            0.5 * (-self.orientation.x * gyro_x - self.orientation.y * gyro_y - self.orientation.z * gyro_z),
+            0.5 * (self.orientation.w * gyro_x + self.orientation.y * gyro_z - self.orientation.z * gyro_y),
+            0.5 * (self.orientation.w * gyro_y - self.orientation.x * gyro_z + self.orientation.z * gyro_x),
+            0.5 * (self.orientation.w * gyro_z + self.orientation.x * gyro_y - self.orientation.y * gyro_x)
+        )
+        
+        # Integrate orientation using first-order approximation
+        gyro_orientation = Quaternion(
+            self.orientation.w + q_dot.w * dt,
+            self.orientation.x + q_dot.x * dt,
+            self.orientation.y + q_dot.y * dt,
+            self.orientation.z + q_dot.z * dt
+        )
+        
+        # Normalize quaternion
+        gyro_magnitude = math.sqrt(
+            gyro_orientation.w**2 + 
+            gyro_orientation.x**2 + 
+            gyro_orientation.y**2 + 
+            gyro_orientation.z**2
+        )
+        
+        gyro_orientation.w /= gyro_magnitude
+        gyro_orientation.x /= gyro_magnitude
+        gyro_orientation.y /= gyro_magnitude
+        gyro_orientation.z /= gyro_magnitude
+        
+        # -------------------
+        # ACCELEROMETER TILT CORRECTION
+        # -------------------
+        
+        # Normalize accelerometer data to get gravity direction
+        accel_x, accel_y, accel_z = sensor_data.accelerometer
+        accel_magnitude = math.sqrt(accel_x**2 + accel_y**2 + accel_z**2)
+        
+        # Only apply correction if acceleration is close to gravity (device not moving significantly)
+        # Typical gravity is around 9.8 m/s^2
+        gravity_threshold = 0.2  # 20% tolerance
+        if abs(accel_magnitude - 9.8) < (9.8 * gravity_threshold):
+            # Normalize accelerometer data to get unit vector in direction of gravity
+            accel_x /= accel_magnitude
+            accel_y /= accel_magnitude
+            accel_z /= accel_magnitude
+            
+            # 1. Transform acceleration to the global frame
+            # The measured acceleration vector in the sensor frame
+            accel_body = Vector(accel_x, accel_y, accel_z)
+            
+            # The reference gravity vector in the global frame (pointing down)
+            gravity_world = Vector(0, 0, -1)
+            
+            # 2. Calculate the tilt axis
+            # Cross product of measured direction (body frame) and ideal direction (world frame)
+            # First convert body acceleration to world frame using current orientation
+            accel_body_quat = Quaternion(0, accel_x, accel_y, accel_z)
+            orientation_conj = self._quaternion_conjugate(self.orientation)
+            accel_world_quat = self._quaternion_multiply(
+                self._quaternion_multiply(self.orientation, accel_body_quat),
+                orientation_conj
+            )
+            accel_world = Vector(accel_world_quat.x, accel_world_quat.y, accel_world_quat.z)
+            
+            # Find the rotation axis (perpendicular to both vectors)
+            tilt_axis = accel_world.cross(gravity_world)
+            tilt_axis_magnitude = tilt_axis.length()
+            
+            # 3. Find the angle between the measured gravity and world up vector
+            if tilt_axis_magnitude > 0.001:  # Avoid normalizing zero vector
+                tilt_axis = tilt_axis / tilt_axis_magnitude
+                
+                # Calculate the cosine of the angle between vectors
+                cos_angle = accel_world * gravity_world
+                # Clamp to valid range to avoid floating point errors
+                cos_angle = max(min(cos_angle, 1.0), -1.0)
+                # Get the angle
+                tilt_angle = math.acos(cos_angle)
+                
+                # Create a quaternion for the tilt correction
+                half_angle = tilt_angle * 0.5
+                tilt_quat = Quaternion(
+                    math.cos(half_angle),
+                    tilt_axis.x * math.sin(half_angle),
+                    tilt_axis.y * math.sin(half_angle),
+                    tilt_axis.z * math.sin(half_angle)
+                )
+                
+                # Create the accelerometer-based orientation
+                accel_orientation = tilt_quat
+        else:
+            # If acceleration is not close to gravity, skip tilt correction
+            accel_orientation = gyro_orientation
+        
+        # -------------------
+        # COMPLEMENTARY FILTER
+        # -------------------
+        
+        # Apply complementary filter to fuse gyroscope and accelerometer estimations
+        # alpha determines how much we trust the gyroscope vs. accelerometer
+        # Higher alpha means more trust in gyroscope (good for short-term)
+        # Lower alpha means more trust in accelerometer (good for long-term stability)
+        # self. = 0.98
+        
+        # Complementary filter formula:
+        # orientation = alpha * gyro_orientation + (1 - alpha) * accel_orientation
+        # For quaternions, we use SLERP (Spherical Linear Interpolation)
+        self.orientation = self._quaternion_slerp(gyro_orientation, accel_orientation, self.alpha)
+        
+        # Double integrate acceleration to get position
+        # First integration: velocity
+        self.velocity_x = self.velocity_x + accel_x * dt if hasattr(self, 'velocity_x') else accel_x * dt
+        self.velocity_y = self.velocity_y + accel_y * dt if hasattr(self, 'velocity_y') else accel_y * dt
+        self.velocity_z = self.velocity_z + accel_z * dt if hasattr(self, 'velocity_z') else accel_z * dt
+        
+        # Second integration: position
+        self.position.x += self.velocity_x * dt
+        self.position.y += self.velocity_y * dt
+        self.position.z += self.velocity_z * dt
+        
+        # Apply complementary filter with magnetometer for yaw correction
+        if hasattr(sensor_data, 'magnetometer'):
+            self._apply_magnetometer_correction(sensor_data.magnetometer)
+        
+        return self.position, self.orientation
+
+    def update_old(self, sensor_data):
         """
         Update position and orientation based on sensor readings.
         
@@ -586,6 +745,76 @@ class DeadReckoningFilter:
         """Create conjugate of quaternion"""
         return Quaternion(q.w, -q.x, -q.y, -q.z)
     
+    def _quaternion_slerp(self, q1, q2, t):
+        """
+        Spherical Linear Interpolation between quaternions.
+        This is the proper way to interpolate between two quaternions.
+        
+        Args:
+            q1 (Quaternion): First quaternion
+            q2 (Quaternion): Second quaternion
+            t (float): Interpolation parameter (0-1)
+            
+        Returns:
+            Quaternion: Interpolated quaternion
+        """
+        # Calculate the dot product of the quaternions
+        dot = q1.w * q2.w + q1.x * q2.x + q1.y * q2.y + q1.z * q2.z
+        
+        # If dot is negative, negate one quaternion to take the shorter path
+        if dot < 0:
+            q2.w = -q2.w
+            q2.x = -q2.x
+            q2.y = -q2.y
+            q2.z = -q2.z
+            dot = -dot
+        
+        # Clamp dot to valid range for acos
+        dot = min(1.0, max(-1.0, dot))
+        
+        # If quaternions are very close, use linear interpolation
+        if dot > 0.9995:
+            result = Quaternion(
+                q1.w * (1 - t) + q2.w * t,
+                q1.x * (1 - t) + q2.x * t,
+                q1.y * (1 - t) + q2.y * t,
+                q1.z * (1 - t) + q2.z * t
+            )
+            
+            # Normalize the result
+            magnitude = math.sqrt(
+                result.w**2 + result.x**2 + result.y**2 + result.z**2
+            )
+            
+            return Quaternion(
+                result.w / magnitude,
+                result.x / magnitude,
+                result.y / magnitude,
+                result.z / magnitude
+            )
+        
+        # Calculate the angle between quaternions
+        theta_0 = math.acos(dot)
+        sin_theta_0 = math.sin(theta_0)
+        
+        # Calculate interpolation parameters
+        theta = theta_0 * t
+        sin_theta = math.sin(theta)
+        
+        # Calculate weights for quaternion components
+        s0 = math.cos(theta) - dot * sin_theta / sin_theta_0
+        s1 = sin_theta / sin_theta_0
+        
+        # Interpolate
+        result = Quaternion(
+            s0 * q1.w + s1 * q2.w,
+            s0 * q1.x + s1 * q2.x,
+            s0 * q1.y + s1 * q2.y,
+            s0 * q1.z + s1 * q2.z
+        )
+        
+        return result
+
     def _quaternion_multiply(self, q1, q2):
         """Multiply two quaternions"""
         w = q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z
