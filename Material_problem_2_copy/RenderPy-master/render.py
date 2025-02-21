@@ -1,5 +1,5 @@
 from image import Image, Color
-from model import DeadReckoningFilter, Model
+from model import Model
 from model import Matrix4
 from model import Vec4
 from model import SensorData
@@ -121,88 +121,69 @@ def update_display(image):
 
 csv_contents = load_csv_data("../IMUData.csv")
 
-dr_filter = DeadReckoningFilter()
-# Calibrate using first 100 samples (assuming the device is at rest)
-dr_filter.calibrate(csv_contents[:100])
+# Calculate face normals
+faceNormals = {}
+for face in model.faces:
+	p0 = model.getTransformedVertex(face[0])
+	p1 = model.getTransformedVertex(face[1])
+	p2 = model.getTransformedVertex(face[2])
+	faceNormal = (p2-p0).cross(p1-p0).normalize()
 
-# Create pygame clock for timing
-clock = pygame.time.Clock()
+	for i in face:
+		if not i in faceNormals:
+			faceNormals[i] = []
+
+		faceNormals[i].append(faceNormal)
+
+# Calculate vertex normals
+vertexNormals = []
+for vertIndex in range(len(model.vertices)):
+	vertNorm = getVertexNormal(vertIndex, faceNormals)
+	vertexNormals.append(vertNorm)
+
+# Render the image iterating through faces
 running = True
-current_data_index = 0
+face_count = 0
 
-# Main rendering loop
-while running and current_data_index < len(csv_contents):
-    # Handle timing
-    delta_time = clock.tick(60) / 1000.0
-    
-    # Get current sensor data and update filter
-    current_sensor_data = csv_contents[current_data_index]
-    position, orientation = dr_filter.update(current_sensor_data)
-    
-    # Convert quaternion to Euler angles
-    roll, pitch, yaw = dr_filter.get_euler_angles()
-    
-    # Update model rotation
-    model.setRotation(roll, pitch, yaw)
-    
-    # Reset image and z-buffer for new frame
-    image = Image(width, height, Color(255, 255, 255, 255))
-    zBuffer = [-float('inf')] * width * height
-    
-    # Calculate face normals
-    faceNormals = {}
-    for face in model.faces:
-        p0 = model.getTransformedVertex(face[0])
-        p1 = model.getTransformedVertex(face[1])
-        p2 = model.getTransformedVertex(face[2])
-        faceNormal = (p2-p0).cross(p1-p0).normalize()
+for face in model.faces:
+	if not running:
+		break
 
-        for i in face:
-            if i not in faceNormals:
-                faceNormals[i] = []
+	# p0, p1, p2 = [model.vertices[i] for i in face]
+	p0 = model.getTransformedVertex(face[0])
+	p1 = model.getTransformedVertex(face[1])
+	p2 = model.getTransformedVertex(face[2])
+	n0, n1, n2 = [vertexNormals[i] for i in face]
 
-            faceNormals[i].append(faceNormal)
+	# Define the light direction
+	lightDir = Vector(0, 0, -1)
 
-    # Calculate vertex normals
-    vertexNormals = []
-    for vertIndex in range(len(model.vertices)):
-        vertNorm = getVertexNormal(vertIndex, faceNormals)
-        vertexNormals.append(vertNorm)
+	# Set to true if face should be culled
+	cull = False
 
-    # Render all faces for this frame
-    for face in model.faces:
-        p0 = model.getTransformedVertex(face[0])
-        p1 = model.getTransformedVertex(face[1])
-        p2 = model.getTransformedVertex(face[2])
-        n0, n1, n2 = [vertexNormals[i] for i in face]
+	# Transform vertices and calculate lighting intensity per vertex
+	transformedPoints = []
+	for p, n in zip([p0, p1, p2], [n0, n1, n2]):
+		intensity = n * lightDir
 
-        # Define the light direction
-        lightDir = Vector(0, 0, -1)
+		# Intensity < 0 means light is shining through the back of the face
+		# In this case, don't draw the face at all ("back-face culling")
+		if intensity < 0:
+			cull = True # Back face culling is disabled in this version
+			
+		screenX, screenY = getPerspectiveProjection(p.x, p.y, p.z, width, height)
+		
+		transformedPoints.append(Point(screenX, screenY, p.z, Color(intensity*255, intensity*255, intensity*255, 255)))
 
-        # Set to true if face should be culled
-        cull = False
+	if not cull:
+		Triangle(transformedPoints[0], transformedPoints[1], transformedPoints[2]).draw_faster(image, zBuffer)
 
-        # Transform vertices and calculate lighting
-        transformedPoints = []
-        for p, n in zip([p0, p1, p2], [n0, n1, n2]):
-            intensity = n * lightDir
+	face_count += 1
+	if face[0] % 10 == 0:  # Adjust this number to control update frequency
+		running = update_display(image)
 
-            if intensity < 0:
-                cull = True
-                
-            screenX, screenY = getPerspectiveProjection(p.x, p.y, p.z, width, height)
-            
-            transformedPoints.append(Point(screenX, screenY, p.z, Color(intensity*255, intensity*255, intensity*255, 255)))
+while running:
+	running = update_display(image)
 
-        if not cull:
-            Triangle(transformedPoints[0], transformedPoints[1], transformedPoints[2]).draw_faster(image, zBuffer)
-
-    # Update display
-    running = update_display(image)
-    
-    # Increment data index
-    current_data_index += 1
-
-# Cleanup
 pygame.quit()
 image.saveAsPNG("image.png")
