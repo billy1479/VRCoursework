@@ -481,6 +481,90 @@ class Model(object):
         self.rot = [roll, pitch, yaw]
         self.updateTransform()
 
+class CollisionObject:
+    def __init__(self, model, position, velocity, radius):
+        """
+        Initialize a collidable object.
+        
+        Args:
+            model: The 3D model for rendering
+            position: Vector representing position in 3D space
+            velocity: Vector representing velocity
+            radius: Radius of bounding sphere
+        """
+        self.model = model
+        self.position = position
+        self.velocity = velocity
+        self.radius = radius
+        
+        # Keep track of previous collisions to prevent "sticking"
+        self.recent_collisions = set()
+        
+    def update(self, dt):
+        """Update position based on velocity"""
+        self.position = self.position + (self.velocity * dt)
+        
+        # Apply a simple bounce if object hits the floor
+        if self.position.y - self.radius < 0:
+            self.position.y = self.radius  # Place on floor
+            self.velocity.y = abs(self.velocity.y) * 0.8  # Bounce with damping
+        
+        # Update model position
+        self.model.setPosition(self.position.x, self.position.y, self.position.z)
+        
+    def check_collision(self, other):
+        """
+        Check for collision with another object using sphere intersection.
+        
+        Args:
+            other: Another CollisionObject to check against
+            
+        Returns:
+            bool: True if collision detected
+        """
+        # Calculate distance between centers
+        distance = (self.position - other.position).length()
+        
+        # Collision occurs if distance is less than sum of radii
+        return distance < (self.radius + other.radius)
+    
+    def resolve_collision(self, other):
+        """
+        Handle collision response between two objects.
+        Uses elastic collision formulas for spheres.
+        
+        Args:
+            other: The CollisionObject we're colliding with
+        """
+        # Skip if we recently collided with this object (prevents sticking)
+        if other in self.recent_collisions:
+            return
+            
+        # Calculate collision normal
+        normal = (other.position - self.position).normalize()
+        
+        # Relative velocity
+        relative_velocity = other.velocity - self.velocity
+        
+        # Coefficient of restitution (bounciness)
+        cor = 0.8
+        
+        # Calculate impulse
+        j = -(1 + cor) * (relative_velocity * normal)
+        j = j / 2  # Assuming equal masses for simplicity
+        
+        # Apply impulse to velocities
+        self.velocity = self.velocity + (normal * j)
+        other.velocity = other.velocity - (normal * j)
+        
+        # Add to recent collisions
+        self.recent_collisions.add(other)
+        other.recent_collisions.add(self)
+        
+    def clear_collision_history(self):
+        """Clear the set of recent collisions"""
+        self.recent_collisions.clear()
+
 class DeadReckoningFilter:
     def __init__(self, alpha=0.98):
         self.orientation = Quaternion(1, 0, 0, 0)

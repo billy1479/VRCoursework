@@ -44,7 +44,14 @@ class Vector(object):
 
     def normalize(self):
         """ Return a normalized unit vector from this vector."""
-        magnitude = self.norm()
+        # magnitude = self.norm()
+        # return Vector(*[comp/magnitude for comp in self])
+        magnitude = math.sqrt(sum(comp * comp for comp in self))
+        
+        # Check if magnitude is effectively zero (using small epsilon for float comparison)
+        if magnitude < 1e-10:  # Using epsilon instead of exact 0 for float comparisons
+            return self  # Return unchanged zero vector
+            
         return Vector(*[comp/magnitude for comp in self])
 
     def dot(self, other):
@@ -56,6 +63,13 @@ class Vector(object):
         assert len(self) == len(other), "Vectors must be the same size."
         assert len(self) == 3, "Cross product only implemented for 3D vectors."
         return Vector((self.y*other.z - self.z*other.y), (self.z*other.x - self.x*other.z), (self.x*other.y - self.y*other.x))
+    
+    def length(self):
+        """
+        Calculate the length (magnitude) of the vector.
+        Returns the square root of the sum of squared components.
+        """
+        return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
 
 
     # Overrides
