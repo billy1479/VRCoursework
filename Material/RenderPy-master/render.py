@@ -1285,10 +1285,335 @@ class SingleObjectSimulation:
         pygame.quit()
         print("Simulation ended")
 
+import pygame
+from image import Image, Color
+from model import Model, CollisionObject, Matrix4
+from vector import Vector
+from shape import Triangle, Point
+import math
+
+# Import the motion blur effect
+from motion_blur import MotionBlurEffect
+
+def getPerspectiveProjection(x, y, z, width, height):
+    """Convert 3D coordinates to screen coordinates using perspective projection"""
+    # Set up perspective parameters
+    fov = math.pi / 3.0  # 60-degree field of view
+    aspect = width / height
+    near = 0.1     # Near clipping plane
+    far = 100.0    # Far clipping plane
+    
+    # Create the perspective matrix
+    perspective_matrix = Matrix4.perspective(fov, aspect, near, far)
+    
+    # Create a vector in homogeneous coordinates
+    from model import Vec4
+    point = Vec4(x, y, z, 1.0)
+    
+    # Apply perspective transformation
+    projected = perspective_matrix.multiply(point)
+    
+    # Perform perspective division
+    normalized = projected.perspectiveDivide()
+    
+    # Convert to screen coordinates
+    screenX = int((normalized.x + 1.0) * width / 2.0)
+    screenY = int((normalized.y + 1.0) * height / 2.0)
+    
+    return screenX, screenY
+
+def setup_colored_scene():
+    """Create a scene with multiple colored headsets"""
+    from model import Model
+    
+    headsets = []
+    
+    # Define some interesting colors (RGB tuples)
+    colors = [
+        (255, 0, 0),    # Red
+        (0, 255, 0),    # Green
+        (0, 0, 255),    # Blue
+        (255, 255, 0),  # Yellow
+        (255, 0, 255),  # Magenta
+        (0, 255, 255),  # Cyan
+        (255, 165, 0),  # Orange
+        (128, 0, 128)   # Purple
+    ]
+    
+    # Create headsets in a circle formation
+    num_circle = 8  # Number of headsets in the circle
+    circle_radius = 15  # Distance from center
+    for i in range(num_circle):
+        angle = (i / num_circle) * 2 * math.pi
+        
+        # Position headsets in a circle
+        pos = Vector(
+            circle_radius * math.cos(angle),
+            1,  # Slightly elevated
+            circle_radius * math.sin(angle) - 10  # Centered at z=-10
+        )
+        
+        # Velocity points toward center with varying speeds
+        speed = 2 + (i % 3)  # Different speeds (2, 3, or 4 units/sec)
+        vel = Vector(
+            -math.cos(angle) * speed,
+            0,
+            -math.sin(angle) * speed
+        )
+        
+        model = Model('data/headset.obj')
+        model.normalizeGeometry()
+        model.setPosition(pos.x, pos.y, pos.z)
+        
+        # Create collision object with color
+        from color_support import ColoredCollisionObject
+        headset = ColoredCollisionObject(
+            model, pos, vel, radius=1.0, 
+            diffuse_color=colors[i % len(colors)]
+        )
+        headsets.append(headset)
+    
+    return headsets
+
+def update_physics(headsets, dt):
+    """Update physics for all objects"""
+    # Use a fixed time step for physics
+    fixed_dt = 1/60  # Target 60 physics updates per second
+    
+    # Accumulate any leftover time
+    update_physics.accumulator = getattr(update_physics, 'accumulator', 0) + dt
+    
+    # Run physics updates with fixed timestep
+    while update_physics.accumulator >= fixed_dt:
+        # Clear collision records
+        for headset in headsets:
+            headset.clear_collision_history()
+        
+        # Apply gravity
+        for headset in headsets:
+            headset.velocity.y -= 9.81 * fixed_dt
+        
+        # Check collisions
+        for i in range(len(headsets)):
+            for j in range(i + 1, len(headsets)):
+                if headsets[i].check_collision(headsets[j]):
+                    headsets[i].resolve_collision(headsets[j])
+        
+        # Update positions
+        for headset in headsets:
+            headset.update(fixed_dt)
+        
+        update_physics.accumulator -= fixed_dt
+
+def store_previous_positions(headsets):
+    """Store current positions of all objects for velocity calculation"""
+    positions = []
+    for headset in headsets:
+        positions.append(Vector(
+            headset.position.x,
+            headset.position.y,
+            headset.position.z
+        ))
+    return positions
+
+def render_scene_with_motion_blur():
+    """Main function to render a scene with motion blur effect"""
+    # Initialize pygame
+    pygame.init()
+    width, height = 800, 600
+    screen = pygame.display.set_mode((width, height))
+    pygame.display.set_caption("3D Renderer with Motion Blur")
+    
+    # Create scene
+    headsets = setup_colored_scene()
+    
+    # Create motion blur processor
+    motion_blur = MotionBlurEffect(blur_strength=0.7, velocity_scale=2.5, max_samples=7)
+    
+    # Track previous positions for each object
+    prev_positions = [None] * len(headsets)
+    
+    # Main rendering loop
+    running = True
+    clock = pygame.time.Clock()
+    
+    # Camera position for lighting calculations
+    camera_pos = Vector(0, 5, -25)
+    light_dir = Vector(0.5, -1, -0.5).normalize()
+    
+    while running:
+        # Handle timing
+        dt = min(clock.tick(60) / 1000.0, 0.1)  # Cap at 0.1s to prevent jumps
+        
+        # Store current positions before updating
+        current_positions = store_previous_positions(headsets)
+        
+        # Update physics
+        update_physics(headsets, dt)
+        
+        # Clear image for new frame
+        image = Image(width, height, Color(10, 10, 40, 255))  # Dark blue background
+        zBuffer = [-float('inf')] * width * height
+        
+        # Render each headset
+        for headset in headsets:
+            model = headset.model
+            
+            # Calculate face normals
+            faceNormals = {}
+            for face in model.faces:
+                p0 = model.getTransformedVertex(face[0])
+                p1 = model.getTransformedVertex(face[1])
+                p2 = model.getTransformedVertex(face[2])
+                faceNormal = (p2-p0).cross(p1-p0).normalize()
+                
+                for i in face:
+                    if i not in faceNormals:
+                        faceNormals[i] = []
+                    faceNormals[i].append(faceNormal)
+            
+            # Calculate vertex normals
+            vertexNormals = []
+            for vertIndex in range(len(model.vertices)):
+                if vertIndex in faceNormals:
+                    from shape import getVertexNormal
+                    vertNorm = getVertexNormal(vertIndex, faceNormals)
+                    vertexNormals.append(vertNorm)
+                else:
+                    vertexNormals.append(Vector(0, 1, 0))  # Default normal
+            
+            # Render faces
+            for face in model.faces:
+                p0 = model.getTransformedVertex(face[0])
+                p1 = model.getTransformedVertex(face[1])
+                p2 = model.getTransformedVertex(face[2])
+                n0, n1, n2 = [vertexNormals[i] for i in face]
+                
+                # Skip back-facing triangles
+                cull = False
+                avg_normal = (n0 + n1 + n2) / 3
+                if avg_normal * light_dir < 0:
+                    cull = True
+                
+                if not cull:
+                    # Create points with positions and normals
+                    triangle_points = []
+                    for p, n in zip([p0, p1, p2], [n0, n1, n2]):
+                        screenX, screenY = getPerspectiveProjection(p.x, p.y, p.z, width, height)
+                        
+                        # Create a point with position, normal, and placeholder color
+                        point = Point(screenX, screenY, p.z, Color(255, 255, 255, 255))
+                        point.normal = n  # Add normal as an attribute for shading
+                        
+                        triangle_points.append(point)
+                    
+                    # Render the triangle with appropriate color from the colored model
+                    from color_support import render_triangle_with_color
+                    render_triangle_with_color(
+                        triangle_points,
+                        image,
+                        zBuffer,
+                        model,  # ColoredModel instance
+                        light_dir,
+                        camera_pos
+                    )
+        
+        # Apply motion blur
+        # Option 1: Per-object blur based on velocity
+        final_image = motion_blur.per_object_velocity_blur(
+            image, headsets, width, height, getPerspectiveProjection
+        )
+        
+        # Option 2: Velocity buffer approach (requires more setup)
+        # velocity_buffer = motion_blur.generate_velocity_buffer(
+        #     [h.position for h in headsets],
+        #     prev_positions,
+        #     width, height
+        # )
+        # final_image = motion_blur.process(image, velocity_buffer)
+        
+        # Option 3: Simple frame accumulation (easier but less accurate)
+        # final_image = motion_blur.process(image)
+        
+        # Update previous positions for next frame
+        prev_positions = current_positions
+        
+        # Display the final image
+        # Convert the image buffer to a Pygame surface
+        buffer_surface = pygame.Surface((width, height))
+        pixel_array = pygame.surfarray.pixels3d(buffer_surface)
+        
+        for y in range(height):
+            for x in range(width):
+                # Calculate the index in the buffer
+                # Each row has a null byte at the start
+                flipY = (height - y - 1)  # Flip Y coordinate
+                index = (flipY * width + x) * 4 + flipY + 1  # +1 for null byte
+                
+                # Extract RGB values from the buffer (ignore alpha)
+                r = final_image.buffer[index]
+                g = final_image.buffer[index + 1]
+                b = final_image.buffer[index + 2]
+                
+                # Update the pixel array
+                pixel_array[x, y] = (r, g, b)
+        
+        del pixel_array  # Release the surface lock
+        
+        # Blit the buffer to the screen
+        screen.blit(buffer_surface, (0, 0))
+        
+        # Draw FPS counter
+        font = pygame.font.SysFont('Arial', 18)
+        fps_text = font.render(f'FPS: {int(clock.get_fps())}', True, (255, 255, 255))
+        screen.blit(fps_text, (10, 10))
+        
+        # Draw motion blur controls info
+        controls_text = font.render('M: Toggle motion blur | +/-: Adjust blur strength', True, (255, 255, 255))
+        screen.blit(controls_text, (10, height - 30))
+        
+        # Update display
+        pygame.display.flip()
+        
+        # Handle events
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key == pygame.K_m:
+                    # Toggle motion blur
+                    motion_blur.blur_strength = 0 if motion_blur.blur_strength > 0 else 0.7
+                    print(f"Motion blur: {'ON' if motion_blur.blur_strength > 0 else 'OFF'}")
+                elif event.key == pygame.K_EQUALS or event.key == pygame.K_PLUS:
+                    # Increase blur strength
+                    motion_blur.blur_strength = min(1.0, motion_blur.blur_strength + 0.1)
+                    print(f"Motion blur strength: {motion_blur.blur_strength:.1f}")
+                elif event.key == pygame.K_MINUS:
+                    # Decrease blur strength
+                    motion_blur.blur_strength = max(0.0, motion_blur.blur_strength - 0.1)
+                    print(f"Motion blur strength: {motion_blur.blur_strength:.1f}")
+                elif event.key == pygame.K_r:
+                    # Reset scene
+                    headsets = setup_colored_scene()
+                    prev_positions = [None] * len(headsets)
+                    print("Scene reset")
+    
+    # Clean up
+    pygame.quit()
+    final_image.saveAsPNG("motion_blur_render.png")
+    print("Render saved as motion_blur_render.png")
+    
 def problem_4_2():
     simulation = SingleObjectSimulation()
     simulation.run_simulation()
 
+def problem_5_1():
+    render_scene_with_motion_blur()
+
 # problem_4_1() # multiple collisions 4.1
 
-problem_4_2() # multiple collisions 4.2
+# problem_4_2() # multiple collisions 4.2
+
+problem_5_1() # motion blur 5.1
