@@ -1416,6 +1416,13 @@ def store_previous_positions(headsets):
         ))
     return positions
 
+def getVertexNormal(vertIndex, faceNormalsByVertex):
+    """Compute vertex normals by averaging the normals of adjacent faces"""
+    normal = Vector(0, 0, 0)
+    for adjNormal in faceNormalsByVertex[vertIndex]:
+        normal = normal + adjNormal
+    return normal / len(faceNormalsByVertex[vertIndex])
+
 def render_scene_with_motion_blur():
     """Main function to render a scene with motion blur effect"""
     # Initialize pygame
@@ -1476,7 +1483,7 @@ def render_scene_with_motion_blur():
             vertexNormals = []
             for vertIndex in range(len(model.vertices)):
                 if vertIndex in faceNormals:
-                    from shape import getVertexNormal
+                    # from shape import getVertexNormal
                     vertNorm = getVertexNormal(vertIndex, faceNormals)
                     vertexNormals.append(vertNorm)
                 else:
@@ -1575,7 +1582,6 @@ def render_scene_with_motion_blur():
         # Update display
         pygame.display.flip()
         
-        # Handle events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -1583,22 +1589,25 @@ def render_scene_with_motion_blur():
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.key == pygame.K_m:
-                    # Toggle motion blur
-                    motion_blur.blur_strength = 0 if motion_blur.blur_strength > 0 else 0.7
-                    print(f"Motion blur: {'ON' if motion_blur.blur_strength > 0 else 'OFF'}")
+                    # Use the toggle method for better logging
+                    motion_blur.toggle()
                 elif event.key == pygame.K_EQUALS or event.key == pygame.K_PLUS:
-                    # Increase blur strength
-                    motion_blur.blur_strength = min(1.0, motion_blur.blur_strength + 0.1)
-                    print(f"Motion blur strength: {motion_blur.blur_strength:.1f}")
+                    # Use the increase method for logging
+                    motion_blur.increase_strength(0.1)
                 elif event.key == pygame.K_MINUS:
-                    # Decrease blur strength
-                    motion_blur.blur_strength = max(0.0, motion_blur.blur_strength - 0.1)
-                    print(f"Motion blur strength: {motion_blur.blur_strength:.1f}")
+                    # Use the decrease method for logging
+                    motion_blur.decrease_strength(0.1)
                 elif event.key == pygame.K_r:
                     # Reset scene
                     headsets = setup_colored_scene()
                     prev_positions = [None] * len(headsets)
-                    print("Scene reset")
+                    print("[Scene] Reset with new headsets")
+                # Optional: Add key to reset blur to default
+                elif event.key == pygame.K_0:
+                    old_value = motion_blur.blur_strength
+                    motion_blur.set_blur_strength(0.7)
+                    print(f"[Motion Blur] Reset to default strength: {old_value:.2f} → {motion_blur.blur_strength:.2f}")
+
     
     # Clean up
     pygame.quit()

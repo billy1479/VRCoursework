@@ -27,6 +27,60 @@ class MotionBlurEffect:
         self.frame_history = []
         self.max_history = max_samples
         
+        # Log initial state
+        self._log_status()
+
+    def _log_status(self):
+        """Log the current status of motion blur settings to console"""
+        status = "ON" if self.blur_strength > 0 else "OFF"
+        print(f"[Motion Blur] Status: {status}, Strength: {self.blur_strength:.2f}, Velocity Scale: {self.velocity_scale:.2f}")
+
+    # Add helper methods to change settings with logging:
+
+    def set_blur_strength(self, value):
+        """Set blur strength with range checking and logging"""
+        old_value = self.blur_strength
+        self.blur_strength = max(0.0, min(1.0, value))
+        
+        # Only log if the value actually changed
+        if old_value != self.blur_strength:
+            # Check if we're turning it on or off
+            if old_value == 0 and self.blur_strength > 0:
+                print(f"[Motion Blur] Turned ON with strength {self.blur_strength:.2f}")
+            elif old_value > 0 and self.blur_strength == 0:
+                print(f"[Motion Blur] Turned OFF")
+            else:
+                print(f"[Motion Blur] Strength changed: {old_value:.2f} → {self.blur_strength:.2f}")
+
+    def toggle(self):
+        """Toggle motion blur on/off"""
+        if self.blur_strength > 0:
+            # Store the current value to restore when toggled back on
+            self._last_strength = self.blur_strength
+            self.blur_strength = 0
+            print(f"[Motion Blur] Turned OFF")
+        else:
+            # Restore previous strength or default to 0.7
+            self.blur_strength = getattr(self, '_last_strength', 0.7)
+            print(f"[Motion Blur] Turned ON with strength {self.blur_strength:.2f}")
+
+    def increase_strength(self, amount=0.1):
+        """Increase blur strength by the specified amount"""
+        old_value = self.blur_strength
+        self.blur_strength = min(1.0, self.blur_strength + amount)
+        if old_value != self.blur_strength:
+            print(f"[Motion Blur] Strength increased: {old_value:.2f} → {self.blur_strength:.2f}")
+
+    def decrease_strength(self, amount=0.1):
+        """Decrease blur strength by the specified amount"""
+        old_value = self.blur_strength
+        self.blur_strength = max(0.0, self.blur_strength - amount)
+        if old_value != self.blur_strength:
+            if self.blur_strength == 0:
+                print(f"[Motion Blur] Turned OFF")
+            else:
+                print(f"[Motion Blur] Strength decreased: {old_value:.2f} → {self.blur_strength:.2f}")
+        
     def process(self, current_image, velocity_buffer=None):
         """
         Apply motion blur effect to the current frame.
