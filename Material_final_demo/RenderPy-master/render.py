@@ -3491,26 +3491,41 @@ class VideoRecorder:
             print(f"ffmpeg -framerate {fps} -i {frames_dir}/frame_%04d.png -c:v libx264 -pix_fmt yuv420p {output_video}")
             return None
     
-    def save_video(self, method="auto"):
+    def save_video(self, filename="simulation.mp4"):
         """
-        Save recorded frames as a video using the specified method
-        
-        Args:
-            method: 'opencv', 'ffmpeg', or 'auto' (tries opencv first, then ffmpeg)
-        
-        Returns:
-            Path to the saved video file or None if failed
+        Save recorded frames as a video file using OpenCV.
         """
-        if method == "opencv":
-            return self.save_opencv_video()
-        elif method == "ffmpeg":
-            return self.generate_ffmpeg_video()
-        else:  # Auto method
-            try:
-                import cv2
-                return self.save_opencv_video()
-            except ImportError:
-                return self.generate_ffmpeg_video()
+        import cv2
+        if not self.frames:
+            print("No frames to save")
+            return None
+
+        try:
+            print(f"Saving video with {len(self.frames)} frames using OpenCV...")
+
+            # Create output video file
+            output_path = os.path.join(self.output_dir, filename)
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Use 'mp4v' codec for MP4
+            out = cv2.VideoWriter(output_path, fourcc, self.fps, (self.width, self.height))
+
+            # Write each frame
+            for i, frame in enumerate(self.frames):
+                # Convert from RGB to BGR for OpenCV
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                out.write(frame_bgr)
+
+                # Print progress every 30 frames
+                if i % 30 == 0:
+                    print(f"Processing frame {i}/{len(self.frames)}")
+
+            # Release the video writer
+            out.release()
+            print(f"Video saved to {output_path}")
+            return output_path
+
+        except Exception as e:
+            print(f"Error saving video with OpenCV: {e}")
+            return None
 
     def clear_frames(self):
         """Clear recorded frames to free memory"""
@@ -4644,6 +4659,6 @@ def problem_6_improved(auto_record=True, duration=20, playback_speed=5):
         # Run in interactive mode
         run_headset_simulation(record_video=False)
 
-problem_6_improved(auto_record=True, duration=600, playback_speed=5)
+problem_6_improved(auto_record=True, duration=1200, playback_speed=1)
                 
     
