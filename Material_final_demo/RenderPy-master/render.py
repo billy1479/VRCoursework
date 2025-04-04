@@ -2658,7 +2658,6 @@ def problem_5_V4():
 # ^^^^^ THIS METHOD WORKS THE BEST AT THE MOMENT FOR VISIBILITY
 # -> WILL NEED TO RESEARCH WHAT IT IS ACTUALLY DOING FOR THE REPORT?
 
-
 # FINAL DEMO METHODS
 
 from extreme_motion_blur import ExtremeMotionBlur
@@ -3310,6 +3309,7 @@ class HeadsetScene:
         print("Simulation ended")
 
     # This function will be added to render.py to run the headset scene
+
 def problem_6():
     """
     Renders a scene with a rotating VR headset in mid-air (using sensor data)
@@ -3319,10 +3319,6 @@ def problem_6():
     # Instantiate and run the headset scene
     scene = HeadsetScene(csv_path="../IMUData.csv")  # Adjust path as needed
     scene.run()
-
-# problem_6()
-
-# IMPROVED VERSION FOR FINAL VIDEO
 
 import numpy as np
 import os
@@ -3532,7 +3528,6 @@ class VideoRecorder:
         self.frames = []
         self.frame_count = 0
         print("Cleared all recorded frames")
-
 
 def record_simulation_to_video(simulation_function, duration_seconds=10, fps=30, width=800, height=600):
     """
@@ -4650,7 +4645,6 @@ def run_headset_simulation(record_video=False, auto_save=False, duration_seconds
         # Run the normal interactive simulation
         scene.run()
 
-
 def problem_6_improved(auto_record=True, duration=20, playback_speed=5):
     if auto_record:
         # Run in auto-record mode for specified seconds then save video
@@ -4659,6 +4653,4 @@ def problem_6_improved(auto_record=True, duration=20, playback_speed=5):
         # Run in interactive mode
         run_headset_simulation(record_video=False)
 
-problem_6_improved(auto_record=True, duration=1200, playback_speed=1)
-                
-    
+problem_6_improved(auto_record=True, duration=5000, playback_speed=1)
