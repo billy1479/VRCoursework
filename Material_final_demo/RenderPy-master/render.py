@@ -27,7 +27,7 @@ buffer_surface = pygame.Surface((width, height))
 zBuffer = [-float('inf')] * width * height
 
 # Load the model
-model = Model('data/headset.obj')
+model = Model('./data/headset.obj')
 model.normalizeGeometry()
 model.setPosition(0, 0, -12)
 # model.setRotation(90, 0, 90)
@@ -51,7 +51,7 @@ def getOrthographicProjection(x, y, z):
 
 	return screenX, screenY
 
-def getPerspectiveProjection(x, y, z, width, height):
+def getPerspectiveProjection_old(x, y, z, width, height):
     # Set up perspective parameters
     fov = math.pi / 3.0  # 60-degree field of view
     aspect = width / height
@@ -1296,7 +1296,6 @@ import math
 from motion_blur import MotionBlurEffect
 
 def getPerspectiveProjection(x, y, z, width, height):
-    """Convert 3D coordinates to screen coordinates using perspective projection"""
     # Set up perspective parameters
     fov = math.pi / 3.0  # 60-degree field of view
     aspect = width / height
@@ -1307,7 +1306,6 @@ def getPerspectiveProjection(x, y, z, width, height):
     perspective_matrix = Matrix4.perspective(fov, aspect, near, far)
     
     # Create a vector in homogeneous coordinates
-    from model import Vec4
     point = Vec4(x, y, z, 1.0)
     
     # Apply perspective transformation
@@ -3623,6 +3621,12 @@ class ImprovedHeadsetScene:
         self.screen = pygame.display.set_mode((width, height))
         pygame.display.set_caption("VR Headset Physics Scene")
         
+        # Camera settings
+        self.camera_follows_headset = True  # Set to True to make camera follow headset
+        self.camera_offset = Vector(0, 2, -5)
+        self.camera_pos = Vector(0, 10, -30)  # Initial camera position
+        self.camera_target = Vector(0, 0, -10)  # Initial target position
+        
         # Create buffer surface for faster rendering
         self.buffer_surface = pygame.Surface((width, height))
         
@@ -3630,8 +3634,7 @@ class ImprovedHeadsetScene:
         self.image = Image(width, height, Color(20, 20, 40, 255))  # Dark blue background
         self.zBuffer = [-float('inf')] * width * height
         
-        # Camera position and lighting
-        self.camera_pos = Vector(0, 10, -30)
+        # Lighting
         self.light_dir = Vector(0.5, -1, -0.5).normalize()
 
         # Add a playback speed multiplier - process multiple IMU samples per frame
@@ -3672,7 +3675,39 @@ class ImprovedHeadsetScene:
         if record_video:
             # Create output directory if it doesn't exist
             os.makedirs("output", exist_ok=True)
-
+            
+    # In the update_camera() method, modify it to:
+    def update_camera(self):
+        """Update camera position to follow headset orientation"""
+        if not self.camera_follows_headset or not self.central_headset:
+            return
+            
+        # Get current headset position and orientation
+        position = self.central_headset["position"]
+        roll, pitch, yaw = self.central_headset["rotation"]
+        
+        # Calculate direction vector from headset orientation
+        # This converts Euler angles to a direction vector
+        direction_x = -math.sin(yaw) * math.cos(pitch)
+        direction_y = math.sin(pitch)
+        direction_z = -math.cos(yaw) * math.cos(pitch)
+        
+        # Set camera position behind and slightly above headset
+        distance = 10.0  # Distance behind headset
+        height_offset = 3.0  # Height above headset
+        
+        self.camera_pos = Vector(
+            position.x - direction_x * distance,
+            position.y + height_offset,
+            position.z - direction_z * distance
+        )
+        
+        # Set camera target to look at headset
+        self.camera_target = position
+        
+        # Update light direction to come from camera position
+        self.light_dir = Vector(direction_x, direction_y, direction_z).normalize()
+    
     def load_sensor_data(self):
         """Load and preprocess sensor data from CSV file"""
         try:
@@ -3974,47 +4009,105 @@ class ImprovedHeadsetScene:
             self.accumulator -= fixed_dt
 
     def perspective_projection(self, x, y, z, width=None, height=None):
-        """Convert 3D world coordinates to 2D screen coordinates with perspective"""
+        """
+        Convert 3D world coordinates to 2D screen coordinates with perspective,
+        taking into account current camera position and orientation.
+        """
         # Use class width/height if not provided
         if width is None:
             width = self.width
         if height is None:
             height = self.height
             
-        # Perspective projection parameters
-        fov = math.pi / 3.0  # 60-degree field of view
+        # Vector from camera to point
+        view_vector = Vector(
+            x - self.camera_pos.x,
+            y - self.camera_pos.y,
+            z - self.camera_pos.z
+        )
         
-        # Avoid division by very small z values
-        depth = z
-        if depth > -0.1:  # Ensure z is negative (behind camera)
-            depth = -0.1
+        # Camera parameters
+        if hasattr(self, 'camera_target'):
+            # Calculate camera direction vector (normalized)
+            camera_dir = Vector(
+                self.camera_target.x - self.camera_pos.x,
+                self.camera_target.y - self.camera_pos.y,
+                self.camera_target.z - self.camera_pos.z
+            ).normalize()
             
-        # Perspective division
-        x_normalized = x / -depth
-        y_normalized = y / -depth
-        
-        # Scale to screen coordinates
-        screenX = int((x_normalized + 1.0) * width / 2.0)
-        screenY = int((y_normalized + 1.0) * height / 2.0)
-        
-        return screenX, screenY
-
+            # Camera up vector (world up)
+            up_vector = Vector(0, 1, 0)
+            
+            # Camera right vector (cross product of dir and up)
+            right_vector = camera_dir.cross(up_vector).normalize()
+            
+            # Recalculate true up vector (to ensure orthogonality)
+            true_up = right_vector.cross(camera_dir).normalize()
+            
+            # Project point onto camera vectors
+            # These are the view-space coordinates
+            x_view = right_vector * view_vector
+            y_view = true_up * view_vector
+            z_view = camera_dir * view_vector
+            
+            # Perspective parameters
+            fov = math.pi / 3.0  # 60 degrees
+            aspect = width / height
+            
+            # Check if point is behind camera
+            if z_view < 0.1:
+                return -1, -1  # Invalid screen coordinates
+            
+            # Apply perspective transformation
+            x_ndc = x_view / (z_view * math.tan(fov/2) * aspect)
+            y_ndc = y_view / (z_view * math.tan(fov/2))
+            
+            # Convert to screen coordinates
+            screen_x = int((x_ndc + 1.0) * width / 2.0)
+            screen_y = int((y_ndc + 1.0) * height / 2.0)
+            
+            return screen_x, screen_y
+        else:
+            # Fallback to basic perspective projection
+            fov = math.pi / 3.0
+            aspect = width / height
+            
+            # Transform to camera space (simple translation)
+            rel_x = x - self.camera_pos.x
+            rel_y = y - self.camera_pos.y
+            rel_z = z - self.camera_pos.z
+            
+            # Skip if behind camera
+            if rel_z > -0.1:
+                return -1, -1
+                
+            # Simple perspective division
+            x_norm = rel_x / -rel_z
+            y_norm = rel_y / -rel_z
+            
+            # Convert to screen space
+            screen_x = int((x_norm + 1.0) * width / 2.0)
+            screen_y = int((y_norm + 1.0) * height / 2.0)
+            
+            return screen_x, screen_y
+    
     def setup_scene(self):
         """Set up the scene with a central rotating headset"""
         # Create a larger central headset
+        # Create the central headset
         model = Model('data/headset.obj')
         model.normalizeGeometry()
         
-        # Position it higher up for better visibility
-        position = Vector(0, 8, -10)
+        # Position it further from camera but still visible
+        position = Vector(0, 5, -15)  # Centered, at camera height, further from camera
         model.setPosition(position.x, position.y, position.z)
         
-        # Make it larger (3x normal size)
-        model.scale = [3.0, 3.0, 3.0]
+        # Make it smaller
+        model.scale = [0.3, 0.3, 0.3]  # Reduced scale
         model.updateTransform()
         
-        # Add a bright, distinctive color
-        model.diffuse_color = (255, 215, 0)  # Gold color
+        # Add gold color
+        model.diffuse_color = (255, 215, 0)
         
         # Store the model
         self.central_headset = {
@@ -4023,11 +4116,11 @@ class ImprovedHeadsetScene:
             "position": position
         }
         
-        # Create floor headsets
+        # Create floor headsets (unchanged)
         self.floor_headsets = self.create_floor_headsets()
 
     def update_central_headset(self):
-        """Update the rotating central headset using precomputed orientations"""
+        """Update the rotating central headset and ensure position is tracked correctly"""
         if self.precomputed_orientations:
             # Use multiple orientations per frame for smoother animation
             for _ in range(self.imu_playback_speed):
@@ -4039,6 +4132,14 @@ class ImprovedHeadsetScene:
                     # Apply rotation to model
                     self.central_headset["model"].setRotation(roll, pitch, yaw)
                     self.central_headset["rotation"] = [roll, pitch, yaw]
+                    
+                    # IMPORTANT: Make sure to update the position Vector from the model's position
+                    model = self.central_headset["model"]
+                    self.central_headset["position"] = Vector(
+                        model.trans[0], 
+                        model.trans[1], 
+                        model.trans[2]
+                    )
                 else:
                     # Reset to beginning of data when we reach the end
                     self.current_data_index = 0
@@ -4055,6 +4156,13 @@ class ImprovedHeadsetScene:
                 self.central_headset["rotation"][0],
                 self.central_headset["rotation"][1],
                 self.central_headset["rotation"][2]
+            )
+            
+            # IMPORTANT: Make sure to update the position Vector from the model's position
+            self.central_headset["position"] = Vector(
+                model.trans[0], 
+                model.trans[1], 
+                model.trans[2]
             )
 
     def render_scene(self):
@@ -4535,8 +4643,12 @@ class ImprovedHeadsetScene:
                     # Update central headset rotation - process multiple IMU samples per frame
                     self.update_central_headset()
                     
+                    self.update_camera()
+                    
                     # Update floor headsets physics
                     self.update_floor_physics(dt)
+                
+                self.update_camera()
                 
                 # Render the scene
                 self.render_scene()
@@ -4653,4 +4765,4 @@ def problem_6_improved(auto_record=True, duration=20, playback_speed=5):
         # Run in interactive mode
         run_headset_simulation(record_video=False)
 
-problem_6_improved(auto_record=True, duration=5000, playback_speed=1)
+problem_6_improved(auto_record=True, duration=2000, playback_speed=5)

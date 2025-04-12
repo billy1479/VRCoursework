@@ -399,8 +399,8 @@ class Model(object):
         
         # Apply rotations
         rot_x = Matrix4.rotation_x(self.rot[0])
-        rot_y = Matrix4.rotation_x(self.rot[1])
-        rot_z = Matrix4.rotation_x(self.rot[2])
+        rot_y = Matrix4.rotation_y(self.rot[1])
+        rot_z = Matrix4.rotation_z(self.rot[2])
         
         # Combine rotations using matrix multiplication
         rotation = rot_z.multiply_matrix(rot_y.multiply_matrix(rot_x))
