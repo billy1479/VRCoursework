@@ -3677,37 +3677,35 @@ class ImprovedHeadsetScene:
             os.makedirs("output", exist_ok=True)
             
     # In the update_camera() method, modify it to:
+
     def update_camera(self):
-        """Update camera position to follow headset orientation"""
-        if not self.camera_follows_headset or not self.central_headset:
+        """Update camera to stay fixed across the axis of the central rotating object"""
+        if not self.central_headset:
             return
             
         # Get current headset position and orientation
         position = self.central_headset["position"]
         roll, pitch, yaw = self.central_headset["rotation"]
         
-        # Calculate direction vector from headset orientation
-        # This converts Euler angles to a direction vector
-        direction_x = -math.sin(yaw) * math.cos(pitch)
-        direction_y = math.sin(pitch)
-        direction_z = -math.cos(yaw) * math.cos(pitch)
+        # Set camera position slightly offset from the headset
+        # We're fixing it on an axis, so we maintain a constant distance and position
+        # relative to the object's center, regardless of its rotation
+        distance = 15.0  # Fixed distance from headset
+        height_offset = 5.0  # Fixed height above headset
         
-        # Set camera position behind and slightly above headset
-        distance = 10.0  # Distance behind headset
-        height_offset = 3.0  # Height above headset
-        
+        # Fixed camera position - doesn't change with rotation
         self.camera_pos = Vector(
-            position.x - direction_x * distance,
-            position.y + height_offset,
-            position.z - direction_z * distance
+            position.x,  # Same x coordinate as headset
+            position.y + height_offset,  # Fixed height above headset
+            position.z - distance  # Fixed distance behind headset
         )
         
-        # Set camera target to look at headset
+        # Always target the headset's position
         self.camera_target = position
         
-        # Update light direction to come from camera position
-        self.light_dir = Vector(direction_x, direction_y, direction_z).normalize()
-    
+        # Keep light direction fixed relative to camera
+        self.light_dir = Vector(0.5, -1, -0.5).normalize()
+
     def load_sensor_data(self):
         """Load and preprocess sensor data from CSV file"""
         try:
@@ -4009,6 +4007,72 @@ class ImprovedHeadsetScene:
             self.accumulator -= fixed_dt
 
     def perspective_projection(self, x, y, z, width=None, height=None):
+        """Calculate screen coordinates using the camera's view matrix"""
+        # Use class width/height if not provided
+        if width is None:
+            width = self.width
+        if height is None:
+            height = self.height
+        
+        # Vector from camera to point
+        rel_x = x - self.camera_pos.x
+        rel_y = y - self.camera_pos.y
+        rel_z = z - self.camera_pos.z
+        
+        # Calculate camera orientation vectors
+        if hasattr(self, 'camera_target'):
+            # Calculate view direction
+            view_dir = Vector(
+                self.camera_target.x - self.camera_pos.x,
+                self.camera_target.y - self.camera_pos.y,
+                self.camera_target.z - self.camera_pos.z
+            ).normalize()
+            
+            # Calculate right vector
+            world_up = Vector(0, 1, 0)
+            right = view_dir.cross(world_up).normalize()
+            
+            # Calculate up vector
+            up = right.cross(view_dir).normalize()
+            
+            # Project point into view space
+            forward_dist = rel_x * view_dir.x + rel_y * view_dir.y + rel_z * view_dir.z
+            right_dist = rel_x * right.x + rel_y * right.y + rel_z * right.z
+            up_dist = rel_x * up.x + rel_y * up.y + rel_z * up.z
+            
+            # Skip if behind camera
+            if forward_dist < 0.1:
+                return -1, -1
+                
+            # Calculate perspective projection
+            fov = math.pi / 3.0  # 60 degrees
+            aspect = width / height
+            
+            # Convert to NDC coordinates
+            right_ndc = right_dist / (forward_dist * math.tan(fov/2) * aspect)
+            up_ndc = up_dist / (forward_dist * math.tan(fov/2))
+            
+            # Convert to screen coordinates
+            screen_x = int((right_ndc + 1.0) * width / 2.0)
+            screen_y = int((-up_ndc + 1.0) * height / 2.0)  # Invert Y
+            
+            return screen_x, screen_y
+        else:
+            # Fallback to basic projection
+            if rel_z > -0.1:  # Skip if behind camera
+                return -1, -1
+                
+            # Basic perspective division
+            x_norm = rel_x / -rel_z
+            y_norm = rel_y / -rel_z
+            
+            # Convert to screen coordinates
+            screen_x = int((x_norm + 1.0) * width / 2.0)
+            screen_y = int((y_norm + 1.0) * height / 2.0)
+            
+            return screen_x, screen_y
+
+    def perspective_projection_old(self, x, y, z, width=None, height=None):
         """
         Convert 3D world coordinates to 2D screen coordinates with perspective,
         taking into account current camera position and orientation.
@@ -4090,8 +4154,39 @@ class ImprovedHeadsetScene:
             screen_y = int((y_norm + 1.0) * height / 2.0)
             
             return screen_x, screen_y
-    
+        
     def setup_scene(self):
+        """Set up the scene with a clearly visible central rotating headset"""
+        # Create the central headset
+        model = Model('data/headset.obj')
+        model.normalizeGeometry()
+        
+        # Position it at camera height, centered in view
+        position = Vector(0, 5, -15)
+        model.setPosition(position.x, position.y, position.z)
+        
+        # Make it larger for better visibility
+        model.scale = [2.0, 2.0, 2.0]
+        model.updateTransform()
+        
+        # Add a distinctive color
+        model.diffuse_color = (255, 215, 0)  # Gold color
+        
+        # Store the model and position
+        self.central_headset = {
+            "model": model,
+            "rotation": [0, 0, 0],
+            "position": position
+        }
+        
+        # Set camera position to fixed orientation relative to headset
+        self.camera_pos = Vector(0, 10, -30)
+        self.camera_target = position
+        
+        # Create floor headsets
+        self.floor_headsets = self.create_floor_headsets()
+    
+    def setup_scene_old(self):
         """Set up the scene with a central rotating headset"""
         # Create a larger central headset
         # Create the central headset
@@ -4119,7 +4214,7 @@ class ImprovedHeadsetScene:
         # Create floor headsets (unchanged)
         self.floor_headsets = self.create_floor_headsets()
 
-    def update_central_headset(self):
+    def update_central_headset_old(self):
         """Update the rotating central headset and ensure position is tracked correctly"""
         if self.precomputed_orientations:
             # Use multiple orientations per frame for smoother animation
@@ -4165,7 +4260,155 @@ class ImprovedHeadsetScene:
                 model.trans[2]
             )
 
+    def update_central_headset(self, dt):
+        """Update the rotating central headset with IMU data"""
+        if self.sensor_data and self.dr_filter:
+            # Use sensor data for rotation if available
+            if self.current_data_index < len(self.sensor_data):
+                # Process multiple samples per frame for smoother animation
+                for _ in range(self.imu_playback_speed):
+                    if self.current_data_index >= len(self.sensor_data):
+                        break
+                        
+                    sensor_data = self.sensor_data[self.current_data_index]
+                    self.current_data_index += 1
+                    
+                    # Update filter and get orientation
+                    _, orientation = self.dr_filter.update(sensor_data)
+                    
+                    # Convert quaternion to Euler angles for model rotation
+                    roll, pitch, yaw = self.dr_filter.get_euler_angles()
+                    
+                    # Apply rotation directly to the model
+                    self.central_headset["model"].setRotation(roll, pitch, yaw)
+                    self.central_headset["rotation"] = [roll, pitch, yaw]
+                    
+                    # Ensure position is updated from model's transform
+                    model = self.central_headset["model"]
+                    self.central_headset["position"] = Vector(
+                        model.trans[0], 
+                        model.trans[1], 
+                        model.trans[2]
+                    )
+            else:
+                # Reset to beginning of data when we reach the end
+                self.current_data_index = 0
+        else:
+            # Fallback: simple rotation pattern with more noticeable movement
+            self.central_headset["rotation"][0] += dt * 1.0  # Roll
+            self.central_headset["rotation"][1] += dt * 1.5  # Pitch
+            self.central_headset["rotation"][2] += dt * 0.8  # Yaw
+            
+            # Apply rotation directly to the model
+            model = self.central_headset["model"]
+            model.setRotation(
+                self.central_headset["rotation"][0],
+                self.central_headset["rotation"][1],
+                self.central_headset["rotation"][2]
+            )
+            model.updateTransform()
+            
+            # Update position from model's transform
+            self.central_headset["position"] = Vector(
+                model.trans[0], 
+                model.trans[1], 
+                model.trans[2]
+            )
+
     def render_scene(self):
+        """Render the scene with camera fixed on central object's axis"""
+        # Update camera to follow rotation of central headset
+        self.update_camera_fixed_axis()
+        
+        # Store previous positions for motion blur
+        if self.blur_enabled:
+            self.motion_blur.update_object_positions(self.floor_headsets)
+        
+        # Clear image and z-buffer for new frame
+        self.image = Image(self.width, self.height, Color(20, 20, 40, 255))
+        self.zBuffer = [-float('inf')] * self.width * self.height
+        
+        # Render floor grid
+        self.render_floor_grid()
+        
+        # Render central rotating headset
+        if self.central_headset:
+            self.render_model(self.central_headset["model"])
+        
+        # Render floor headsets
+        for headset in self.floor_headsets:
+            self.render_model(headset.model)
+        
+        # Apply motion blur if enabled
+        if self.blur_enabled:
+            final_image = self.motion_blur.apply_blur(
+                self.image, 
+                self.floor_headsets, 
+                self.width, 
+                self.height, 
+                self.perspective_projection
+            )
+        else:
+            final_image = self.image
+        
+        # Update display
+        self.update_display(final_image)
+        
+        # Draw debug info
+        if self.show_debug:
+            self.draw_debug_info()
+
+    def update_camera_fixed_axis(self):
+        """Fix camera on the central object's axis as it rotates"""
+        if not self.central_headset:
+            return
+        
+        # Get current headset position and orientation
+        position = self.central_headset["position"]
+        roll, pitch, yaw = self.central_headset["rotation"]
+        
+        # Calculate direction vector from headset orientation
+        # This converts Euler angles to a forward direction vector
+        forward_x = -math.sin(yaw) * math.cos(pitch)
+        forward_y = math.sin(pitch)
+        forward_z = -math.cos(yaw) * math.cos(pitch)
+        forward = Vector(forward_x, forward_y, forward_z).normalize()
+        
+        # Calculate up vector based on roll
+        sin_roll = math.sin(roll)
+        cos_roll = math.cos(roll)
+        
+        # Start with world up vector
+        world_up = Vector(0, 1, 0)
+        
+        # Calculate right vector (perpendicular to forward and world up)
+        right = forward.cross(world_up).normalize()
+        
+        # Calculate actual up vector (rolled)
+        up = Vector(
+            right.x * sin_roll + world_up.x * cos_roll,
+            right.y * sin_roll + world_up.y * cos_roll,
+            right.z * sin_roll + world_up.z * cos_roll
+        ).normalize()
+        
+        # Distance from object to camera
+        distance = 8.0
+        
+        # Position camera directly along the object's axis
+        # We move it back along the forward vector to view from behind
+        self.camera_pos = Vector(
+            position.x - forward.x * distance,
+            position.y - forward.y * distance,
+            position.z - forward.z * distance
+        )
+        
+        # Target the object's position
+        self.camera_target = position
+        
+        # Update light direction relative to camera
+        self.light_dir = forward  # 
+
+    def render_scene_old(self):
         """Optimized scene rendering"""
         # Store previous positions for motion blur
         if self.blur_enabled:
@@ -4643,7 +4886,7 @@ class ImprovedHeadsetScene:
                     # Update central headset rotation - process multiple IMU samples per frame
                     self.update_central_headset()
                     
-                    self.update_camera()
+                    # self.update_camera()
                     
                     # Update floor headsets physics
                     self.update_floor_physics(dt)
@@ -4726,7 +4969,7 @@ def run_headset_simulation(record_video=False, auto_save=False, duration_seconds
                             running = False
                 
                 # Update central headset
-                scene.update_central_headset()
+                scene.update_central_headset(dt)
                 
                 # Update physics
                 scene.update_floor_physics(dt)
@@ -4765,4 +5008,716 @@ def problem_6_improved(auto_record=True, duration=20, playback_speed=5):
         # Run in interactive mode
         run_headset_simulation(record_video=False)
 
-problem_6_improved(auto_record=True, duration=2000, playback_speed=5)
+# problem_6_improved(auto_record=True, duration=2000, playback_speed=5)
+
+import pygame
+from image import Image, Color
+from model import Model, DeadReckoningFilter, SensorDataParser, CollisionObject
+from vector import Vector
+from shape import Triangle, Point
+import math
+import random
+
+class FixedAxisCameraScene:
+    def __init__(self, width=800, height=600, csv_path="../IMUData.csv"):
+        # Initialize pygame
+        pygame.init()
+        self.width = width
+        self.height = height
+        self.screen = pygame.display.set_mode((width, height))
+        pygame.display.set_caption("Fixed-Axis Camera Demo")
+        
+        # Image and Z-buffer
+        self.image = Image(width, height, Color(20, 20, 40, 255))
+        self.zBuffer = [-float('inf')] * width * height
+        
+        # Camera settings
+        self.camera_pos = Vector(0, 5, -25)
+        self.camera_target = Vector(0, 5, -15)
+        
+        # Lighting
+        self.light_dir = Vector(0.5, -0.7, -0.5).normalize()
+        
+        # Load sensor data
+        self.csv_path = csv_path
+        self.load_sensor_data()
+        
+        # Setup scene objects
+        self.central_headset = None
+        self.floor_headsets = []
+        self.setup_scene()
+        
+        # Physics settings
+        self.friction_coefficient = 0.95  # Higher = less friction
+        self.accumulator = 0  # For fixed timestep physics
+        
+        # Control flags
+        self.paused = False
+        self.show_debug = True
+        
+        # Font for info display
+        self.font = pygame.font.SysFont('Arial', 18)
+        
+        # Frame counter
+        self.frame_count = 0
+    
+    def load_sensor_data(self):
+        """Load and preprocess sensor data from CSV file"""
+        try:
+            parser = SensorDataParser(self.csv_path)
+            self.sensor_data = parser.parse()
+            print(f"Loaded {len(self.sensor_data)} sensor data points")
+            
+            # Create dead reckoning filter
+            self.dr_filter = DeadReckoningFilter(alpha=0.98)
+            # Calibrate using first 100 samples
+            self.dr_filter.calibrate(self.sensor_data[:min(100, len(self.sensor_data))])
+            
+            self.current_data_index = 0
+        except Exception as e:
+            print(f"Error loading sensor data: {e}")
+            print("Using fallback rotation pattern instead")
+            self.sensor_data = None
+            self.dr_filter = None
+    
+    def create_floor_headsets(self):
+        """Create multiple headsets that slide on the floor"""
+        headsets = []
+        
+        # Colors for headsets
+        colors = [
+            (255, 0, 0),    # Red
+            (0, 255, 0),    # Green
+            (0, 0, 255),    # Blue
+            (255, 255, 0),  # Yellow
+            (255, 0, 255),  # Magenta
+            (0, 255, 255),  # Cyan
+            (255, 165, 0),  # Orange
+            (128, 0, 128)   # Purple
+        ]
+        
+        # Create headsets in a circle formation
+        num_circle = 8
+        circle_radius = 15
+        for i in range(num_circle):
+            angle = (i / num_circle) * 2 * math.pi
+            
+            # Position in circle
+            pos = Vector(
+                circle_radius * math.cos(angle),
+                1,  # Slightly above floor
+                circle_radius * math.sin(angle) - 15  # Centered at z=-15
+            )
+            
+            # Velocity toward center
+            speed = 2 + (i % 3)  # Different speeds
+            vel = Vector(
+                -math.cos(angle) * speed,
+                0,
+                -math.sin(angle) * speed
+            )
+            
+            model = Model('data/headset.obj')
+            model.normalizeGeometry()
+            model.setPosition(pos.x, pos.y, pos.z)
+            
+            # Assign color
+            model.diffuse_color = colors[i % len(colors)]
+            
+            # Create collision object
+            headset = CollisionObject(model, pos, vel, radius=1.0)
+            headsets.append(headset)
+        
+        # Add a "billiards break" pattern
+        triangle_size = 3  # Number of rows in triangle
+        start_z = -5
+        color_index = 0
+        for row in range(triangle_size):
+            for col in range(row + 1):
+                pos = Vector(
+                    (col - row/2) * 2,  # Center the triangle
+                    1,
+                    start_z + row * 2
+                )
+                # Stationary initially
+                vel = Vector(
+                    (random.random() - 0.5) * 0.2,  # Small random velocity
+                    0,
+                    (random.random() - 0.5) * 0.2
+                )
+                
+                model = Model('data/headset.obj')
+                model.normalizeGeometry()
+                model.setPosition(pos.x, pos.y, pos.z)
+                
+                # Assign color
+                model.diffuse_color = colors[color_index % len(colors)]
+                color_index += 1
+                
+                headset = CollisionObject(model, pos, vel, radius=1.0)
+                headsets.append(headset)
+        
+        # Add a "cue ball" headset
+        pos = Vector(0, 1, -25)  # Behind the triangle
+        vel = Vector(0, 0, 8)    # Moving forward
+        
+        model = Model('data/headset.obj')
+        model.normalizeGeometry()
+        model.setPosition(pos.x, pos.y, pos.z)
+        model.diffuse_color = (255, 255, 255)  # White
+        
+        headsets.append(CollisionObject(model, pos, vel, radius=1.0))
+        
+        return headsets
+    
+    def setup_scene(self):
+        """Set up the scene with a central rotating headset and floor headsets"""
+        # Create central headset
+        model = Model('data/headset.obj')
+        model.normalizeGeometry()
+        
+        # Position it for good visibility
+        position = Vector(0, 5, -15)
+        model.setPosition(position.x, position.y, position.z)
+        
+        # Distinctive color
+        model.diffuse_color = (255, 215, 0)  # Gold
+        
+        # Store model details
+        self.central_headset = {
+            "model": model,
+            "rotation": [0, 0, 0],
+            "position": position
+        }
+        
+        # Create floor headsets
+        self.floor_headsets = self.create_floor_headsets()
+    
+    def update_central_headset(self, dt):
+        """Update the rotating central headset with IMU data"""
+        if self.sensor_data and self.dr_filter:
+            # Use sensor data for rotation
+            if self.current_data_index < len(self.sensor_data):
+                sensor_data = self.sensor_data[self.current_data_index]
+                self.current_data_index += 1
+                
+                # Update filter and get orientation
+                _, orientation = self.dr_filter.update(sensor_data)
+                
+                # Convert quaternion to Euler angles
+                roll, pitch, yaw = self.dr_filter.get_euler_angles()
+                
+                # Apply rotation to model
+                self.central_headset["model"].setRotation(roll, pitch, yaw)
+                self.central_headset["rotation"] = [roll, pitch, yaw]
+            else:
+                # Reset to beginning when data ends
+                self.current_data_index = 0
+        else:
+            # Fallback rotation pattern
+            self.central_headset["rotation"][0] += dt * 0.5  # Roll
+            self.central_headset["rotation"][1] += dt * 0.7  # Pitch
+            self.central_headset["rotation"][2] += dt * 0.3  # Yaw
+            
+            # Apply rotation to model
+            model = self.central_headset["model"]
+            model.setRotation(
+                self.central_headset["rotation"][0],
+                self.central_headset["rotation"][1],
+                self.central_headset["rotation"][2]
+            )
+    
+    def update_camera_fixed_axis(self):
+        """Fix camera on the central object's axis as it rotates"""
+        if not self.central_headset:
+            return
+        
+        # Get object's rotation
+        roll, pitch, yaw = self.central_headset["rotation"]
+        position = self.central_headset["position"]
+        
+        # Create rotation matrices for each axis
+        # Roll (X-axis rotation)
+        cos_roll, sin_roll = math.cos(roll), math.sin(roll)
+        roll_matrix = [
+            [1, 0, 0],
+            [0, cos_roll, -sin_roll],
+            [0, sin_roll, cos_roll]
+        ]
+        
+        # Pitch (Y-axis rotation)
+        cos_pitch, sin_pitch = math.cos(pitch), math.sin(pitch)
+        pitch_matrix = [
+            [cos_pitch, 0, sin_pitch],
+            [0, 1, 0],
+            [-sin_pitch, 0, cos_pitch]
+        ]
+        
+        # Yaw (Z-axis rotation)
+        cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+        yaw_matrix = [
+            [cos_yaw, -sin_yaw, 0],
+            [sin_yaw, cos_yaw, 0],
+            [0, 0, 1]
+        ]
+        
+        # Calculate view direction vector by applying rotation matrices
+        # Start with initial view vector pointing along negative z-axis
+        view_vec = [0, 0, -1]
+        
+        # Apply yaw (z-axis rotation)
+        view_vec = [
+            yaw_matrix[0][0] * view_vec[0] + yaw_matrix[0][1] * view_vec[1] + yaw_matrix[0][2] * view_vec[2],
+            yaw_matrix[1][0] * view_vec[0] + yaw_matrix[1][1] * view_vec[1] + yaw_matrix[1][2] * view_vec[2],
+            yaw_matrix[2][0] * view_vec[0] + yaw_matrix[2][1] * view_vec[1] + yaw_matrix[2][2] * view_vec[2]
+        ]
+        
+        # Apply pitch (y-axis rotation)
+        view_vec = [
+            pitch_matrix[0][0] * view_vec[0] + pitch_matrix[0][1] * view_vec[1] + pitch_matrix[0][2] * view_vec[2],
+            pitch_matrix[1][0] * view_vec[0] + pitch_matrix[1][1] * view_vec[1] + pitch_matrix[1][2] * view_vec[2],
+            pitch_matrix[2][0] * view_vec[0] + pitch_matrix[2][1] * view_vec[1] + pitch_matrix[2][2] * view_vec[2]
+        ]
+        
+        # Apply roll (x-axis rotation)
+        view_vec = [
+            roll_matrix[0][0] * view_vec[0] + roll_matrix[0][1] * view_vec[1] + roll_matrix[0][2] * view_vec[2],
+            roll_matrix[1][0] * view_vec[0] + roll_matrix[1][1] * view_vec[1] + roll_matrix[1][2] * view_vec[2],
+            roll_matrix[2][0] * view_vec[0] + roll_matrix[2][1] * view_vec[1] + roll_matrix[2][2] * view_vec[2]
+        ]
+        
+        # Convert to Vector
+        view_direction = Vector(view_vec[0], view_vec[1], view_vec[2]).normalize()
+        
+        # Position camera at a fixed distance along the view direction
+        # This is the key part - we place the camera so it's looking directly
+        # along the object's axis
+        distance = 10.0
+        self.camera_pos = Vector(
+            position.x - view_direction.x * distance,
+            position.y - view_direction.y * distance,
+            position.z - view_direction.z * distance
+        )
+        
+        # The camera always targets the object position
+        self.camera_target = position
+    
+    def update_floor_physics(self, dt):
+        """Update physics for floor headsets with collisions and friction"""
+        # Use a fixed time step for physics
+        fixed_dt = 1/60.0
+        
+        # Accumulate leftover time
+        self.accumulator += dt
+        
+        # Define boundary limits
+        boundary = {
+            'min_x': -30.0,
+            'max_x': 30.0,
+            'min_z': -40.0,
+            'max_z': 0.0,
+            'bounce_factor': 0.8  # Energy retained after bounce
+        }
+        
+        # Run physics updates with fixed timestep
+        while self.accumulator >= fixed_dt:
+            # Clear collision records
+            for headset in self.floor_headsets:
+                headset.clear_collision_history()
+            
+            # Apply gravity
+            for headset in self.floor_headsets:
+                headset.velocity.y -= 9.81 * fixed_dt
+            
+            # Check collisions between headsets
+            for i in range(len(self.floor_headsets)):
+                for j in range(i + 1, len(self.floor_headsets)):
+                    # Quick distance check
+                    dx = self.floor_headsets[i].position.x - self.floor_headsets[j].position.x
+                    dy = self.floor_headsets[i].position.y - self.floor_headsets[j].position.y
+                    dz = self.floor_headsets[i].position.z - self.floor_headsets[j].position.z
+                    dist_sq = dx*dx + dy*dy + dz*dz
+                    
+                    # Only check collision if objects are close enough
+                    max_dist = self.floor_headsets[i].radius + self.floor_headsets[j].radius
+                    if dist_sq < max_dist * max_dist * 1.5:
+                        if self.floor_headsets[i].check_collision(self.floor_headsets[j]):
+                            self.floor_headsets[i].resolve_collision(self.floor_headsets[j])
+            
+            # Apply floor constraints and friction
+            for headset in self.floor_headsets:
+                # Check if headset is on the floor
+                is_on_floor = headset.position.y - headset.radius <= 0.01
+                
+                if is_on_floor:
+                    # Ensure headset doesn't go below floor
+                    headset.position.y = headset.radius
+                    
+                    # Apply friction to horizontal velocity
+                    horizontal_speed_squared = (
+                        headset.velocity.x**2 + 
+                        headset.velocity.z**2
+                    )
+                    
+                    if horizontal_speed_squared > 0.001:
+                        # Apply friction
+                        headset.velocity.x *= self.friction_coefficient
+                        headset.velocity.z *= self.friction_coefficient
+                        
+                        # Stop if very slow
+                        if horizontal_speed_squared < 0.05:
+                            headset.velocity.x = 0
+                            headset.velocity.z = 0
+                
+                # Apply boundary constraints
+                # X-axis boundaries
+                if headset.position.x - headset.radius < boundary['min_x']:
+                    headset.position.x = boundary['min_x'] + headset.radius
+                    headset.velocity.x = -headset.velocity.x * boundary['bounce_factor']
+                elif headset.position.x + headset.radius > boundary['max_x']:
+                    headset.position.x = boundary['max_x'] - headset.radius
+                    headset.velocity.x = -headset.velocity.x * boundary['bounce_factor']
+                
+                # Z-axis boundaries
+                if headset.position.z - headset.radius < boundary['min_z']:
+                    headset.position.z = boundary['min_z'] + headset.radius
+                    headset.velocity.z = -headset.velocity.z * boundary['bounce_factor']
+                elif headset.position.z + headset.radius > boundary['max_z']:
+                    headset.position.z = boundary['max_z'] - headset.radius
+                    headset.velocity.z = -headset.velocity.z * boundary['bounce_factor']
+            
+            # Update positions
+            for headset in self.floor_headsets:
+                headset.update(fixed_dt)
+            
+            self.accumulator -= fixed_dt
+    
+    def perspective_projection(self, x, y, z):
+        """Advanced perspective projection with proper view matrix"""
+        # Vector from camera to point
+        to_point = Vector(
+            x - self.camera_pos.x,
+            y - self.camera_pos.y,
+            z - self.camera_pos.z
+        )
+        
+        # Camera orientation vectors
+        forward = Vector(
+            self.camera_target.x - self.camera_pos.x,
+            self.camera_target.y - self.camera_pos.y,
+            self.camera_target.z - self.camera_pos.z
+        ).normalize()
+        
+        # Define camera's up vector (world up)
+        world_up = Vector(0, 1, 0)
+        
+        # Calculate camera's right vector (perpendicular to forward and up)
+        right = forward.cross(world_up).normalize()
+        
+        # Calculate true up vector (perpendicular to forward and right)
+        up = right.cross(forward).normalize()
+        
+        # Project point onto camera orientation vectors
+        right_component = to_point.x * right.x + to_point.y * right.y + to_point.z * right.z
+        up_component = to_point.x * up.x + to_point.y * up.y + to_point.z * up.z
+        forward_component = to_point.x * forward.x + to_point.y * forward.y + to_point.z * forward.z
+        
+        # Skip if point is behind camera
+        if forward_component < 0.1:
+            return -1, -1
+        
+        # Apply perspective projection
+        fov = math.pi / 3.0  # 60 degrees
+        aspect = self.width / self.height
+        
+        # Convert to NDC coordinates (-1 to 1)
+        x_ndc = right_component / (forward_component * math.tan(fov/2) * aspect)
+        y_ndc = up_component / (forward_component * math.tan(fov/2))
+        
+        # Convert to screen coordinates
+        screen_x = int((x_ndc + 1.0) * self.width / 2.0)
+        screen_y = int((-y_ndc + 1.0) * self.height / 2.0)  # Flip Y
+        
+        return screen_x, screen_y
+    
+    def render_model(self, model):
+        """Render a 3D model with lighting"""
+        # Get the model object
+        if hasattr(model, 'model'):
+            model = model.model
+            
+        # Precalculate transformed vertices
+        transformed_vertices = []
+        for i in range(len(model.vertices)):
+            transformed_vertices.append(model.getTransformedVertex(i))
+        
+        # Calculate face normals
+        faceNormals = {}
+        for face in model.faces:
+            p0 = transformed_vertices[face[0]]
+            p1 = transformed_vertices[face[1]]
+            p2 = transformed_vertices[face[2]]
+            faceNormal = (p2-p0).cross(p1-p0).normalize()
+            
+            for i in face:
+                if i not in faceNormals:
+                    faceNormals[i] = []
+                faceNormals[i].append(faceNormal)
+        
+        # Calculate vertex normals
+        vertexNormals = []
+        for vertIndex in range(len(model.vertices)):
+            if vertIndex in faceNormals:
+                normal = Vector(0, 0, 0)
+                for adjNormal in faceNormals[vertIndex]:
+                    normal = normal + adjNormal
+                vertexNormals.append(normal / len(faceNormals[vertIndex]))
+            else:
+                vertexNormals.append(Vector(0, 1, 0))  # Default normal
+        
+        # Get model color
+        model_color = getattr(model, 'diffuse_color', (255, 255, 255))
+        
+        # Render all faces
+        for face in model.faces:
+            p0 = transformed_vertices[face[0]]
+            p1 = transformed_vertices[face[1]]
+            p2 = transformed_vertices[face[2]]
+            n0, n1, n2 = [vertexNormals[i] for i in face]
+            
+            # Skip back-facing triangles
+            avg_normal = (n0 + n1 + n2) / 3
+            view_dir = Vector(
+                self.camera_target.x - self.camera_pos.x,
+                self.camera_target.y - self.camera_pos.y,
+                self.camera_target.z - self.camera_pos.z
+            ).normalize()
+            if avg_normal * view_dir <= 0:
+                continue
+            
+            # Create points with lighting
+            triangle_points = []
+            for p, n in zip([p0, p1, p2], [n0, n1, n2]):
+                screenX, screenY = self.perspective_projection(p.x, p.y, p.z)
+                
+                # Skip if offscreen
+                if screenX < 0 or screenY < 0 or screenX >= self.width or screenY >= self.height:
+                    continue
+                
+                # Calculate lighting intensity
+                intensity = max(0.2, n * self.light_dir)
+                
+                # Apply lighting to model color
+                r, g, b = model_color
+                color = Color(
+                    int(r * intensity),
+                    int(g * intensity),
+                    int(b * intensity),
+                    255
+                )
+                
+                # Create point
+                point = Point(screenX, screenY, p.z, color)
+                triangle_points.append(point)
+            
+            # Draw the triangle if all points are valid
+            if len(triangle_points) == 3:
+                Triangle(
+                    triangle_points[0],
+                    triangle_points[1],
+                    triangle_points[2]
+                ).draw_faster(self.image, self.zBuffer)
+    
+    def render_floor_grid(self):
+        """Render a grid on the floor"""
+        grid_size = 20
+        grid_step = 4
+        grid_color = Color(80, 80, 100, 255)
+        
+        # Draw grid on the floor
+        for x in range(-grid_size, grid_size + 1, grid_step):
+            for z in range(-grid_size, grid_size + 1, grid_step):
+                # X-axis lines
+                if x % grid_step == 0:
+                    p1 = Vector(x, 0, -grid_size)
+                    p2 = Vector(x, 0, grid_size)
+                    screen_p1 = self.perspective_projection(p1.x, p1.y, p1.z)
+                    screen_p2 = self.perspective_projection(p2.x, p2.y, p2.z)
+                    
+                    # Draw line if on screen
+                    if (screen_p1[0] > 0 and screen_p1[1] > 0 and
+                        screen_p2[0] > 0 and screen_p2[1] > 0):
+                        pygame.draw.line(
+                            self.screen,
+                            (grid_color.r(), grid_color.g(), grid_color.b()),
+                            screen_p1, screen_p2, 1
+                        )
+                
+                # Z-axis lines
+                if z % grid_step == 0:
+                    p1 = Vector(-grid_size, 0, z)
+                    p2 = Vector(grid_size, 0, z)
+                    screen_p1 = self.perspective_projection(p1.x, p1.y, p1.z)
+                    screen_p2 = self.perspective_projection(p2.x, p2.y, p2.z)
+                    
+                    # Draw line if on screen
+                    if (screen_p1[0] > 0 and screen_p1[1] > 0 and
+                        screen_p2[0] > 0 and screen_p2[1] > 0):
+                        pygame.draw.line(
+                            self.screen,
+                            (grid_color.r(), grid_color.g(), grid_color.b()),
+                            screen_p1, screen_p2, 1
+                        )
+    
+    def render_scene(self):
+        """Render the current scene state"""
+        # Update camera to fixed position on object's axis
+        self.update_camera_fixed_axis()
+        
+        # Clear image and z-buffer
+        self.image = Image(self.width, self.height, Color(20, 20, 40, 255))
+        self.zBuffer = [-float('inf')] * self.width * self.height
+        
+        # Render floor grid
+        self.render_floor_grid()
+        
+        # Render floor headsets
+        for headset in self.floor_headsets:
+            self.render_model(headset)
+        
+        # Render the central headset
+        if self.central_headset:
+            self.render_model(self.central_headset["model"])
+        
+        # Convert image to pygame surface
+        self.update_display()
+        
+        # Draw debug info
+        if self.show_debug:
+            self.draw_debug_info()
+    
+    def update_display(self):
+        """Update the display with current image buffer"""
+        for y in range(self.height):
+            for x in range(self.width):
+                # Calculate buffer index
+                flipY = (self.height - y - 1)
+                index = (flipY * self.width + x) * 4 + flipY + 1  # +1 for null byte
+                
+                # Extract RGB values
+                if index + 2 < len(self.image.buffer):
+                    r = self.image.buffer[index]
+                    g = self.image.buffer[index + 1]
+                    b = self.image.buffer[index + 2]
+                    
+                    # Set pixel on screen
+                    self.screen.set_at((x, y), (r, g, b))
+    
+    def draw_debug_info(self):
+        """Draw debug information on screen"""
+        # Display rotation values
+        if self.central_headset:
+            rot = self.central_headset["rotation"]
+            rot_text = self.font.render(
+                f"Rotation: Roll={math.degrees(rot[0]):.1f}°, Pitch={math.degrees(rot[1]):.1f}°, Yaw={math.degrees(rot[2]):.1f}°",
+                True, (255, 255, 255)
+            )
+            self.screen.blit(rot_text, (10, 10))
+            
+            # Display current data index if using IMU data
+            if self.sensor_data:
+                data_text = self.font.render(
+                    f"IMU Data: {self.current_data_index}/{len(self.sensor_data)}",
+                    True, (255, 255, 255)
+                )
+                self.screen.blit(data_text, (10, 35))
+        
+        # Display object count
+        count_text = self.font.render(
+            f"Objects: {len(self.floor_headsets) + 1}",
+            True, (255, 255, 255)
+        )
+        self.screen.blit(count_text, (10, 60))
+        
+        # Display controls
+        controls_text = self.font.render(
+            "R: Reset | P: Pause/Play | ESC: Quit",
+            True, (200, 200, 200)
+        )
+        self.screen.blit(controls_text, (10, self.height - 30))
+    
+    def handle_events(self):
+        """Handle user input events"""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return False
+                
+                elif event.key == pygame.K_r:
+                    # Reset to beginning of data
+                    if self.sensor_data:
+                        self.current_data_index = 0
+                    # Reset rotation
+                    if self.central_headset:
+                        self.central_headset["rotation"] = [0, 0, 0]
+                    # Reset floor headsets
+                    self.floor_headsets = self.create_floor_headsets()
+                    print("Scene reset")
+                
+                elif event.key == pygame.K_p:
+                    # Pause/resume simulation
+                    self.paused = not self.paused
+                    print(f"Simulation {'Paused' if self.paused else 'Resumed'}")
+        
+        return True
+    
+    def run(self):
+        """Main loop to run the simulation"""
+        clock = pygame.time.Clock()
+        running = True
+        
+        print("Fixed-Axis Camera Demo with Floor Headsets")
+        print("------------------------------------------")
+        print("Controls:")
+        print("  R: Reset scene")
+        print("  P: Pause/resume simulation")
+        print("  ESC: Quit")
+        
+        while running:
+            # Handle timing
+            dt = min(clock.tick(60) / 1000.0, 0.1)  # Cap at 0.1s
+            
+            # Handle events
+            running = self.handle_events()
+            
+            # Skip updates if paused
+            if not self.paused:
+                # Update central headset rotation
+                self.update_central_headset(dt)
+                
+                # Update floor headsets physics
+                self.update_floor_physics(dt)
+            
+            # Render the scene
+            self.render_scene()
+            
+            # Update display
+            pygame.display.flip()
+            
+            # Update frame counter
+            self.frame_count += 1
+        
+        # Clean up
+        pygame.quit()
+        print("Simulation ended")
+
+# Entry point function
+def fixed_axis_camera_demo():
+    """Run the fixed-axis camera demo with floor headsets"""
+    scene = FixedAxisCameraScene()
+    scene.run()
+
+fixed_axis_camera_demo()
