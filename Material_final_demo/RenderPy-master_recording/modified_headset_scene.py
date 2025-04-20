@@ -7,9 +7,8 @@ import math
 import time
 import os
 
-# Import the VideoRecorder class
-from video_recorder import VideoRecorder 
-
+# Import the VideoRecorder from the separate file
+from video_recorder import VideoRecorder
 class FixedCameraHeadsetScene:
     """
     A 3D scene with multiple VR headsets:
@@ -18,7 +17,7 @@ class FixedCameraHeadsetScene:
     - Camera maintains a fixed position to view all the action
     - Recording capability using VideoRecorder
     """
-    def __init__(self, width=800, height=600, csv_path="IMUData.csv"):
+    def __init__(self, width=800, height=600, csv_path="IMUData.csv", auto_record=True):
         # Initialize pygame
         pygame.init()
         self.width = width
@@ -73,6 +72,8 @@ class FixedCameraHeadsetScene:
         # Set up video recording
         self.video_recorder = VideoRecorder(width, height, fps=30)
         self.is_recording = False
+        self.auto_record = auto_record  # Flag to control automatic recording
+        self.recording_finished = False  # Flag to track if recording has been stopped
 
     def load_sensor_data(self):
         """Load and preprocess sensor data from CSV file"""
@@ -401,6 +402,11 @@ class FixedCameraHeadsetScene:
                 # Process multiple samples per frame for smoother animation
                 for _ in range(self.imu_playback_speed):
                     if self.current_data_index >= len(self.sensor_data):
+                        # Check if we've reached the end of the dataset
+                        if self.auto_record and self.is_recording and not self.recording_finished:
+                            self.stop_recording()
+                            self.recording_finished = True
+                            print("IMU dataset completed, stopping recording")
                         break
                         
                     sensor_data = self.sensor_data[self.current_data_index]
@@ -426,6 +432,12 @@ class FixedCameraHeadsetScene:
             else:
                 # Reset to beginning of data when we reach the end
                 self.current_data_index = 0
+                
+                # If auto-recording is enabled, stop recording when dataset is finished
+                if self.auto_record and self.is_recording and not self.recording_finished:
+                    self.stop_recording()
+                    self.recording_finished = True
+                    print("IMU dataset completed, stopping recording")
         else:
             # Fallback: simple rotation pattern
             self.central_headset["rotation"][0] += dt * 1.0  # Roll
@@ -490,6 +502,96 @@ class FixedCameraHeadsetScene:
         # Draw debug info
         if self.show_debug:
             self.draw_debug_info()
+
+    def render_model(self, model_obj):
+        """Render a 3D model with lighting"""
+        # Get the model object
+        if hasattr(model_obj, 'model'):
+            model = model_obj.model
+        else:
+            model = model_obj
+        
+        # Precalculate transformed vertices
+        transformed_vertices = []
+        for i in range(len(model.vertices)):
+            transformed_vertices.append(model.getTransformedVertex(i))
+        
+        # Calculate face normals
+        faceNormals = {}
+        for face in model.faces:
+            p0 = transformed_vertices[face[0]]
+            p1 = transformed_vertices[face[1]]
+            p2 = transformed_vertices[face[2]]
+            faceNormal = (p2-p0).cross(p1-p0).normalize()
+            
+            for i in face:
+                if i not in faceNormals:
+                    faceNormals[i] = []
+                faceNormals[i].append(faceNormal)
+        
+        # Calculate vertex normals
+        vertexNormals = []
+        for vertIndex in range(len(model.vertices)):
+            if vertIndex in faceNormals:
+                normal = Vector(0, 0, 0)
+                for adjNormal in faceNormals[vertIndex]:
+                    normal = normal + adjNormal
+                vertexNormals.append(normal / len(faceNormals[vertIndex]))
+            else:
+                vertexNormals.append(Vector(0, 1, 0))  # Default normal
+        
+        # Get model color
+        model_color = getattr(model, 'diffuse_color', (255, 255, 255))
+        
+        # Render all faces
+        for face in model.faces:
+            p0 = transformed_vertices[face[0]]
+            p1 = transformed_vertices[face[1]]
+            p2 = transformed_vertices[face[2]]
+            n0, n1, n2 = [vertexNormals[i] for i in face]
+            
+            # Skip back-facing triangles
+            avg_normal = (n0 + n1 + n2) / 3
+            view_dir = Vector(
+                self.camera_pos.x - (p0.x + p1.x + p2.x) / 3,
+                self.camera_pos.y - (p0.y + p1.y + p2.y) / 3,
+                self.camera_pos.z - (p0.z + p1.z + p2.z) / 3
+            ).normalize()
+            if avg_normal * view_dir <= 0:
+                continue
+            
+            # Create points with lighting
+            triangle_points = []
+            for p, n in zip([p0, p1, p2], [n0, n1, n2]):
+                screenX, screenY = self.perspective_projection(p.x, p.y, p.z)
+                
+                # Skip if offscreen
+                if screenX < 0 or screenY < 0 or screenX >= self.width or screenY >= self.height:
+                    continue
+                
+                # Calculate lighting intensity
+                intensity = max(0.2, n * self.light_dir)
+                
+                # Apply lighting to model color
+                r, g, b = model_color
+                color = Color(
+                    int(r * intensity),
+                    int(g * intensity),
+                    int(b * intensity),
+                    255
+                )
+                
+                # Create point
+                point = Point(screenX, screenY, p.z, color)
+                triangle_points.append(point)
+            
+            # Draw the triangle if all points are valid
+            if len(triangle_points) == 3:
+                Triangle(
+                    triangle_points[0],
+                    triangle_points[1],
+                    triangle_points[2]
+                ).draw_faster(self.image, self.zBuffer)
 
     def render_model(self, model_obj):
         """Render a 3D model with lighting"""
@@ -893,8 +995,12 @@ class FixedCameraHeadsetScene:
         print("  W/S: Move camera forward/backward")
         print("  ESC: Quit")
         
+        self.start_recording()
+        
         while running:
             # Handle timing
+            # self.start_recording()
+            
             dt = min(clock.tick(60) / 1000.0, 0.1)  # Cap at 0.1s to prevent physics jumps
             
             # Track frame time for FPS calculation
@@ -923,6 +1029,7 @@ class FixedCameraHeadsetScene:
             self.frame_count += 1
         
         # Clean up
+        # self.stop_recording()
         pygame.quit()
         print(f"Simulation ended after {self.frame_count} frames")
 
@@ -948,3 +1055,4 @@ def run_fixed_camera_scene_with_recording():
 # Run this function to start the simulation
 if __name__ == "__main__":
     run_fixed_camera_scene_with_recording()
+    
