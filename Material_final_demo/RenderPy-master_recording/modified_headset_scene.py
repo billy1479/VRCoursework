@@ -393,6 +393,22 @@ class FixedCameraHeadsetScene:
         
         # Create floor headsets
         self.floor_headsets = self.create_floor_headsets()
+        
+        # Load the floor object
+        # floor_model = Model('data/floor.obj')
+        try:
+            floor_model = Model('data/floor.obj')
+            print("Floor model loaded successfully")
+        except Exception as e:
+            print(f"Error loading floor model: {e}")
+        floor_model.normalizeGeometry()
+        floor_model.setPosition(0, 0, -20)  # Adjust position as needed
+        floor_model.scale = [60.0, 1.0, 40.0]  # Adjust scale as needed
+        floor_model.updateTransform()
+        floor_model.diffuse_color = (120, 120, 160)  # Gray color for the floor
+        
+        # Store the floor model
+        self.floor_model = floor_model
 
     def update_central_headset(self, dt):
         """Update the rotating central headset with IMU data"""
@@ -458,9 +474,9 @@ class FixedCameraHeadsetScene:
                 model.trans[1], 
                 model.trans[2]
             )
-
+            
     def render_scene(self):
-        """Render the scene with all headsets"""
+        """Render the scene with all headsets and the floor"""
         # Store previous positions for motion blur
         if self.blur_enabled:
             self.motion_blur.update_object_positions(self.floor_headsets)
@@ -469,8 +485,10 @@ class FixedCameraHeadsetScene:
         self.image = Image(self.width, self.height, Color(20, 20, 40, 255))
         self.zBuffer = [-float('inf')] * self.width * self.height
         
-        # Render floor grid
-        self.render_floor_grid()
+        # Render the floor object FIRST (so other objects render on top of it)
+        if hasattr(self, 'floor_model') and self.floor_model:
+            print("Rendering floor model")
+            self.render_model(self.floor_model)
         
         # Render central rotating headset
         if self.central_headset:
@@ -495,40 +513,44 @@ class FixedCameraHeadsetScene:
         # Update display
         self.update_display(final_image)
         
+        # Render boundary walls only (not floor grid)
+        self.render_floor_grid()
+        
         # Capture frame for video if recording
         if self.is_recording:
             self.video_recorder.capture_frame(self.screen)
         
         # Draw debug info
         if self.show_debug:
-            self.draw_debug_info()
-
+            self.draw_debug_info()        
+    
     def render_model(self, model_obj):
         """Render a 3D model with lighting"""
-        # Get the model object
-        if hasattr(model_obj, 'model'):
-            model = model_obj.model
-        else:
-            model = model_obj
-        
+        # Handle models with or without a 'model' attribute
+        model = getattr(model_obj, 'model', model_obj)
+
+        # Debug: Print model details
+        print(f"Rendering model with {len(model.vertices)} vertices and {len(model.faces)} faces")
+
         # Precalculate transformed vertices
         transformed_vertices = []
         for i in range(len(model.vertices)):
-            transformed_vertices.append(model.getTransformedVertex(i))
-        
+            transformed_vertex = model.getTransformedVertex(i)
+            transformed_vertices.append(transformed_vertex)
+
         # Calculate face normals
         faceNormals = {}
         for face in model.faces:
             p0 = transformed_vertices[face[0]]
             p1 = transformed_vertices[face[1]]
             p2 = transformed_vertices[face[2]]
-            faceNormal = (p2-p0).cross(p1-p0).normalize()
-            
+            faceNormal = (p2 - p0).cross(p1 - p0).normalize()
+
             for i in face:
                 if i not in faceNormals:
                     faceNormals[i] = []
                 faceNormals[i].append(faceNormal)
-        
+
         # Calculate vertex normals
         vertexNormals = []
         for vertIndex in range(len(model.vertices)):
@@ -539,129 +561,40 @@ class FixedCameraHeadsetScene:
                 vertexNormals.append(normal / len(faceNormals[vertIndex]))
             else:
                 vertexNormals.append(Vector(0, 1, 0))  # Default normal
-        
-        # Get model color
-        model_color = getattr(model, 'diffuse_color', (255, 255, 255))
-        
-        # Render all faces
-        for face in model.faces:
-            p0 = transformed_vertices[face[0]]
-            p1 = transformed_vertices[face[1]]
-            p2 = transformed_vertices[face[2]]
-            n0, n1, n2 = [vertexNormals[i] for i in face]
-            
-            # Skip back-facing triangles
-            avg_normal = (n0 + n1 + n2) / 3
-            view_dir = Vector(
-                self.camera_pos.x - (p0.x + p1.x + p2.x) / 3,
-                self.camera_pos.y - (p0.y + p1.y + p2.y) / 3,
-                self.camera_pos.z - (p0.z + p1.z + p2.z) / 3
-            ).normalize()
-            if avg_normal * view_dir <= 0:
-                continue
-            
-            # Create points with lighting
-            triangle_points = []
-            for p, n in zip([p0, p1, p2], [n0, n1, n2]):
-                screenX, screenY = self.perspective_projection(p.x, p.y, p.z)
-                
-                # Skip if offscreen
-                if screenX < 0 or screenY < 0 or screenX >= self.width or screenY >= self.height:
-                    continue
-                
-                # Calculate lighting intensity
-                intensity = max(0.2, n * self.light_dir)
-                
-                # Apply lighting to model color
-                r, g, b = model_color
-                color = Color(
-                    int(r * intensity),
-                    int(g * intensity),
-                    int(b * intensity),
-                    255
-                )
-                
-                # Create point
-                point = Point(screenX, screenY, p.z, color)
-                triangle_points.append(point)
-            
-            # Draw the triangle if all points are valid
-            if len(triangle_points) == 3:
-                Triangle(
-                    triangle_points[0],
-                    triangle_points[1],
-                    triangle_points[2]
-                ).draw_faster(self.image, self.zBuffer)
 
-    def render_model(self, model_obj):
-        """Render a 3D model with lighting"""
-        # Get the model object
-        if hasattr(model_obj, 'model'):
-            model = model_obj.model
-        else:
-            model = model_obj
-        
-        # Precalculate transformed vertices
-        transformed_vertices = []
-        for i in range(len(model.vertices)):
-            transformed_vertices.append(model.getTransformedVertex(i))
-        
-        # Calculate face normals
-        faceNormals = {}
-        for face in model.faces:
-            p0 = transformed_vertices[face[0]]
-            p1 = transformed_vertices[face[1]]
-            p2 = transformed_vertices[face[2]]
-            faceNormal = (p2-p0).cross(p1-p0).normalize()
-            
-            for i in face:
-                if i not in faceNormals:
-                    faceNormals[i] = []
-                faceNormals[i].append(faceNormal)
-        
-        # Calculate vertex normals
-        vertexNormals = []
-        for vertIndex in range(len(model.vertices)):
-            if vertIndex in faceNormals:
-                normal = Vector(0, 0, 0)
-                for adjNormal in faceNormals[vertIndex]:
-                    normal = normal + adjNormal
-                vertexNormals.append(normal / len(faceNormals[vertIndex]))
-            else:
-                vertexNormals.append(Vector(0, 1, 0))  # Default normal
-        
         # Get model color
         model_color = getattr(model, 'diffuse_color', (255, 255, 255))
-        
+
         # Render all faces
         for face in model.faces:
             p0 = transformed_vertices[face[0]]
             p1 = transformed_vertices[face[1]]
             p2 = transformed_vertices[face[2]]
             n0, n1, n2 = [vertexNormals[i] for i in face]
-            
-            # Skip back-facing triangles
-            avg_normal = (n0 + n1 + n2) / 3
-            view_dir = Vector(
-                self.camera_pos.x - (p0.x + p1.x + p2.x) / 3,
-                self.camera_pos.y - (p0.y + p1.y + p2.y) / 3,
-                self.camera_pos.z - (p0.z + p1.z + p2.z) / 3
-            ).normalize()
-            if avg_normal * view_dir <= 0:
-                continue
-            
+
+            is_floor = (model == self.floor_model)
+            if not is_floor:  # Only apply backface culling to non-floor objects
+                avg_normal = (n0 + n1 + n2) / 3
+                view_dir = Vector(
+                    self.camera_pos.x - (p0.x + p1.x + p2.x) / 3,
+                    self.camera_pos.y - (p0.y + p1.y + p2.y) / 3,
+                    self.camera_pos.z - (p0.z + p1.z + p2.z) / 3
+                ).normalize()
+                if avg_normal * view_dir <= 0:
+                    continue
+
             # Create points with lighting
             triangle_points = []
             for p, n in zip([p0, p1, p2], [n0, n1, n2]):
                 screenX, screenY = self.perspective_projection(p.x, p.y, p.z)
-                
+
                 # Skip if offscreen
                 if screenX < 0 or screenY < 0 or screenX >= self.width or screenY >= self.height:
                     continue
-                
+
                 # Calculate lighting intensity
                 intensity = max(0.2, n * self.light_dir)
-                
+
                 # Apply lighting to model color
                 r, g, b = model_color
                 color = Color(
@@ -670,11 +603,11 @@ class FixedCameraHeadsetScene:
                     int(b * intensity),
                     255
                 )
-                
+
                 # Create point
                 point = Point(screenX, screenY, p.z, color)
                 triangle_points.append(point)
-            
+
             # Draw the triangle if all points are valid
             if len(triangle_points) == 3:
                 Triangle(
@@ -684,11 +617,7 @@ class FixedCameraHeadsetScene:
                 ).draw_faster(self.image, self.zBuffer)
 
     def render_floor_grid(self):
-        """Render a grid on the floor and boundary walls"""
-        grid_size = 20
-        grid_step = 4
-        grid_color = (80, 80, 100)
-        
+        """Render boundary walls and debug info for the floor"""
         # Define boundary walls
         boundary = {
             'min_x': -30.0,
@@ -698,42 +627,8 @@ class FixedCameraHeadsetScene:
             'height': 5.0  # Height of walls
         }
         
-        # Draw grid lines on the floor
-        for x in range(-grid_size, grid_size + 1, grid_step):
-            for z in range(-grid_size, grid_size + 1, grid_step):
-                # X-axis lines
-                if x % grid_step == 0:
-                    p1 = Vector(x, 0, -grid_size)
-                    p2 = Vector(x, 0, grid_size)
-                    screen_p1 = self.perspective_projection(p1.x, p1.y, p1.z)
-                    screen_p2 = self.perspective_projection(p2.x, p2.y, p2.z)
-                    
-                    # Draw if on screen
-                    if (screen_p1[0] >= 0 and screen_p1[1] >= 0 and
-                        screen_p2[0] >= 0 and screen_p2[1] >= 0):
-                        pygame.draw.line(
-                            self.screen,
-                            grid_color,
-                            screen_p1, screen_p2, 1
-                        )
-                
-                # Z-axis lines
-                if z % grid_step == 0:
-                    p1 = Vector(-grid_size, 0, z)
-                    p2 = Vector(grid_size, 0, z)
-                    screen_p1 = self.perspective_projection(p1.x, p1.y, p1.z)
-                    screen_p2 = self.perspective_projection(p2.x, p2.y, p2.z)
-                    
-                    # Draw if on screen
-                    if (screen_p1[0] >= 0 and screen_p1[1] >= 0 and
-                        screen_p2[0] >= 0 and screen_p2[1] >= 0):
-                        pygame.draw.line(
-                            self.screen,
-                            grid_color,
-                            screen_p1, screen_p2, 1
-                        )
-        
         # Draw boundary walls (simple outlines)
+        wall_color = (100, 100, 220)
         wall_points = [
             # Floor corners
             (boundary['min_x'], 0, boundary['min_z']),
@@ -757,7 +652,6 @@ class FixedCameraHeadsetScene:
                 screen_points.append(None)
         
         # Draw vertical edges
-        wall_color = (100, 100, 220)
         for i in range(4):
             if screen_points[i] and screen_points[i+4]:
                 pygame.draw.line(
