@@ -5727,24 +5727,29 @@ def problem_6_fixed_camera():
     Modified version of problem_6 that renders a scene with a rotating VR headset
     and multiple headsets sliding on the floor with friction and collisions.
     Uses a fixed camera position rather than a camera that follows the headset's axis.
+    
+    Features:
+    - Automatically records the scene from startup until the IMU dataset completes
+    - Video is saved to the output directory
+    - Fixed camera provides a good view of both the rotating headset and floor physics
     """
-    # from fixed_camera_headset_scene import FixedCameraHeadsetScene
     from modified_headset_scene import FixedCameraHeadsetScene
     
-    print("Running VR Headset Physics Scene with Fixed Camera")
+    print("Running VR Headset Physics Scene with Fixed Camera and Auto-Recording")
+    print("The scene will be recorded from start until the IMU dataset has been fully processed")
     
-    # Instantiate and run the headset scene with a fixed camera
+    # Instantiate and run the headset scene with a fixed camera and auto-recording
     try:
         # Try to use a local path first
-        scene = FixedCameraHeadsetScene(csv_path="IMUData.csv")
+        scene = FixedCameraHeadsetScene(csv_path="../IMUData.csv", auto_record=True)
     except Exception as e:
         # If that fails, try using a relative path with parent directory
         try:
-            scene = FixedCameraHeadsetScene(csv_path="../IMUData.csv")
+            scene = FixedCameraHeadsetScene(csv_path="../IMUData.csv", auto_record=True)
         except Exception as e2:
             print(f"Error loading IMU data: {e2}")
             print("Continuing with fallback rotation pattern")
-            scene = FixedCameraHeadsetScene(csv_path="")
+            scene = FixedCameraHeadsetScene(csv_path="", auto_record=True)
     
     scene.run()
     
