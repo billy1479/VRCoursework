@@ -405,7 +405,7 @@ class FixedCameraHeadsetScene:
         floor_model.setPosition(0, 0, -20)  # Adjust position as needed
         floor_model.scale = [60.0, 1.0, 40.0]  # Adjust scale as needed
         floor_model.updateTransform()
-        floor_model.diffuse_color = (120, 120, 160)  # Gray color for the floor
+        floor_model.diffuse_color = (200, 200, 200)  # Gray color for the floor
         
         # Store the floor model
         self.floor_model = floor_model
@@ -474,8 +474,58 @@ class FixedCameraHeadsetScene:
                 model.trans[1], 
                 model.trans[2]
             )
-            
+    
     def render_scene(self):
+        """Render the scene with all headsets and the floor"""
+        # Store previous positions for motion blur
+        if self.blur_enabled:
+            self.motion_blur.update_object_positions(self.floor_headsets)
+        
+        # Clear image and z-buffer for new frame
+        self.image = Image(self.width, self.height, Color(20, 20, 40, 255))
+        self.zBuffer = [-float('inf')] * self.width * self.height
+        
+        # First render the floor as a solid surface
+        if self.floor_model:
+            self.render_floor_model(self.floor_model)
+        
+        # Render central rotating headset
+        if self.central_headset:
+            self.render_model(self.central_headset["model"])
+        
+        # Render floor headsets
+        for headset in self.floor_headsets:
+            self.render_model(headset.model)
+        
+        # Apply motion blur if enabled
+        if self.blur_enabled:
+            final_image = self.motion_blur.apply_blur(
+                self.image, 
+                self.floor_headsets, 
+                self.width, 
+                self.height, 
+                self.perspective_projection
+            )
+        else:
+            final_image = self.image
+            
+        self.image = Image(self.width, self.height, Color(100, 100, 150, 255))  # Light blue background
+        
+        # Update display
+        self.update_display(final_image)
+        
+        # Render boundary walls only (not floor grid)
+        self.render_floor_grid()
+        
+        # Capture frame for video if recording
+        if self.is_recording:
+            self.video_recorder.capture_frame(self.screen)
+        
+        # Draw debug info
+        if self.show_debug:
+            self.draw_debug_info()
+    
+    def render_scene_old(self):
         """Render the scene with all headsets and the floor"""
         # Store previous positions for motion blur
         if self.blur_enabled:
@@ -524,7 +574,7 @@ class FixedCameraHeadsetScene:
     
     def render_floor_model(self, floor_model):
         """
-        Special rendering method for the floor to ensure it appears as a solid surface.
+        Render the floor as a solid surface with a grid texture.
         """
         if floor_model is None:
             print("No floor model to render")
@@ -538,21 +588,13 @@ class FixedCameraHeadsetScene:
         
         # Get model color (with ambient lighting for better visibility)
         floor_color = getattr(floor_model, 'diffuse_color', (120, 120, 160))
-        ambient_factor = 0.7  # Higher ambient factor for better visibility
-        base_color = Color(
-            int(floor_color[0] * ambient_factor),
-            int(floor_color[1] * ambient_factor),
-            int(floor_color[2] * ambient_factor),
-            255
-        )
+        ambient_factor = 1  # Higher ambient factor for better visibility
         
         # Render all faces of the floor
         for face in floor_model.faces:
             p0 = transformed_vertices[face[0]]
             p1 = transformed_vertices[face[1]]
             p2 = transformed_vertices[face[2]]
-            
-            # Skip backface culling for floor - we want to see it from all angles
             
             # Project vertices to screen coordinates
             screen_points = []
@@ -563,23 +605,23 @@ class FixedCameraHeadsetScene:
                 if screenX < 0 or screenY < 0 or screenX >= self.width or screenY >= self.height:
                     continue
                 
-                # Add slight shading based on distance from center for visual interest
-                dist_factor = 1.0 - min(1.0, (p.x**2 + p.z**2) / 1000.0) * 0.3
+                # Add slight shading based on grid pattern
+                grid_size = 5.0
+                grid_factor = 0.8 + 0.2 * ((int(abs(p.x)/grid_size) + int(abs(p.z)/grid_size)) % 2)
+                
                 color = Color(
-                    int(base_color.r() * dist_factor),
-                    int(base_color.g() * dist_factor),
-                    int(base_color.b() * dist_factor),
+                    int(floor_color[0] * ambient_factor * grid_factor),
+                    int(floor_color[1] * ambient_factor * grid_factor),
+                    int(floor_color[2] * ambient_factor * grid_factor),
                     255
                 )
                 
                 # Create point with floor color
-                from shape import Point
                 point = Point(screenX, screenY, p.z, color)
                 screen_points.append(point)
             
             # Draw the triangle if all points are valid
             if len(screen_points) == 3:
-                from shape import Triangle
                 Triangle(
                     screen_points[0],
                     screen_points[1],
