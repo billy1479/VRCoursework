@@ -3714,7 +3714,7 @@ class ImprovedHeadsetScene:
             print(f"Loaded {len(self.sensor_data)} sensor data points")
             
             # Create dead reckoning filter
-            self.dr_filter = DeadReckoningFilter(alpha=0.98)
+            self.dr_filter = DeadReckoningFilter(alpha=1)
             # Calibrate using first 100 samples
             self.dr_filter.calibrate(self.sensor_data[:min(100, len(self.sensor_data))])
             
