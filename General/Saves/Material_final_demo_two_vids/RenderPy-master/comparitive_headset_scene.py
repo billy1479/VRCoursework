@@ -742,7 +742,7 @@ def run_orientation_filter_comparison():
     """
     try:
         # Try to use a local path first
-        scene = ComparativeHeadsetScene(csv_path="IMUData.csv")
+        scene = ComparativeHeadsetScene(csv_path="../IMUData.csv")
     except Exception as e:
         # If that fails, try using a relative path with parent directory
         try:
