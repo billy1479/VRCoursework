@@ -147,7 +147,7 @@ def test_alpha_values(csv_contents, model, image_width, image_height):
         print(f"\nTesting alpha = {alpha}")
         
         # Create a new filter with this alpha value
-        dr_filter = DeadReckoningFilter(alpha=alpha)
+        dr_filter = DeadReckoningFilter()
         
         # Calibrate using first 100 samples (assuming the device is at rest)
         dr_filter.calibrate(csv_contents[:100])
