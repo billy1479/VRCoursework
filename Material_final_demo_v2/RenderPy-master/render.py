@@ -1,3 +1,4 @@
+import random
 import pygame
 import os
 import time
@@ -29,7 +30,7 @@ class HeadsetSimulation:
         self.camera_target = Vector(0, 5, -15)
         self.light_dir = Vector(0.5, -1, -0.5).normalize()
         
-        # Motion blur - using your existing methods
+        # Motion blur
         self.motion_blur = MotionBlurEffect(blur_strength=0.7)
         self.blur_enabled = True
         
@@ -45,39 +46,19 @@ class HeadsetSimulation:
         self.floor_headsets = []
         self.setup_scene()
         
-        # Physics settings
-        self.friction_coefficient = 0.98
+        # Physics settings - Reduced friction significantly for longer movement
+        self.friction_coefficient = 0.95  # Changed from 0.98 to 0.995 (much less friction)
         self.accumulator = 0
+        
+        # Target frames for 27 seconds at 30fps
+        self.target_frames = 1000
         
         # Display
         self.font = pygame.font.SysFont('Arial', 18)
         self.frame_count = 0
         self.fps_history = []
         self.paused = False
-
-    # def load_imu_data(self):
-    #     """Load IMU data for headset rotation"""
-    #     imu_data_paths = ["../IMUData.csv", "./IMUData.csv"]
-    #     self.sensor_data = None
-        
-    #     for path in imu_data_paths:
-    #         try:
-    #             if os.path.exists(path):
-    #                 print(f"Found IMU data at {path}")
-    #                 parser = SensorDataParser(path)
-    #                 self.sensor_data = parser.parse()
-    #                 print(f"Loaded {len(self.sensor_data)} IMU data points")
-                    
-    #                 # Create and calibrate filter
-    #                 self.dr_filter = DeadReckoningFilter(alpha=0.9)
-    #                 self.dr_filter.calibrate(self.sensor_data[:min(100, len(self.sensor_data))])
-    #                 self.current_data_index = 0
-    #                 return
-    #         except Exception as e:
-    #             print(f"Error loading IMU data from {path}: {e}")
-        
-    #     # Create synthetic data if no IMU data found
-    #     self.create_synthetic_imu_data()
+        self.imu_progress = 0
 
     def create_synthetic_imu_data(self):
         """Create synthetic IMU data if no real data available"""
@@ -104,13 +85,17 @@ class HeadsetSimulation:
         self.current_data_index = 0
 
     def setup_scene(self):
-        """Set up the scene with main headset and floor headsets"""
+        """Set up the scene with main headset, floor headsets, and floor object"""
         # Main floating headset
         model = Model('./data/headset.obj')
         model.normalizeGeometry()
-        position = Vector(0, 15, -15)
+        
+        # Position further away from the camera
+        position = Vector(0, 15, -20)
         model.setPosition(position.x, position.y, position.z)
-        model.scale = [0.3, 0.3, 0.3]
+        
+        # Make the headset smaller
+        model.scale = [0.5, 0.5, 0.5]
         model.updateTransform()
         
         self.main_headset = {
@@ -119,11 +104,31 @@ class HeadsetSimulation:
             "position": position
         }
         
+        # Load the floor object
+        try:
+            floor_model = Model('./data/floor.obj')
+            floor_model.normalizeGeometry()
+            
+            # Position the floor under the headsets
+            floor_model.setPosition(0, 0, -20)
+            
+            # Scale the floor to cover the entire movement area
+            floor_model.scale = [60.0, 1.0, 40.0]
+            floor_model.updateTransform()
+            
+            # Create colored version of the floor
+            self.floor_object = ColoredModel(floor_model, diffuse_color=(150, 150, 150))
+            
+            print("Floor model loaded successfully")
+        except Exception as e:
+            print(f"Error loading floor model: {e}")
+            self.floor_object = None
+        
         # Create floor headsets
         self.floor_headsets = self.create_floor_headsets()
 
     def create_floor_headsets(self):
-        """Create sliding headsets that will collide on the floor"""
+        """Create sliding headsets that will collide on the floor with higher initial velocities"""
         headsets = []
         
         # Colors for different headsets
@@ -138,7 +143,7 @@ class HeadsetSimulation:
             (128, 0, 128)   # Purple
         ]
         
-        # Circle of headsets moving inward
+        # Circle of headsets moving inward - Higher velocities
         num_circle = 8
         circle_radius = 20
         for i in range(num_circle):
@@ -148,10 +153,13 @@ class HeadsetSimulation:
                 1,
                 circle_radius * math.sin(angle) - 10
             )
+            
+            # Set higher velocity for longer movement
+            speed = 3 + (i % 3)  # Increased speed
             vel = Vector(
-                -math.cos(angle) * 2,
+                -math.cos(angle) * speed,
                 0,
-                -math.sin(angle) * 2
+                -math.sin(angle) * speed
             )
             
             model = Model('./data/headset.obj')
@@ -164,7 +172,7 @@ class HeadsetSimulation:
             # Create collision object
             headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
         
-        # Triangle formation of headsets
+        # Triangle formation of headsets with small initial velocities
         triangle_size = 3
         start_z = -5
         color_index = 0
@@ -175,7 +183,13 @@ class HeadsetSimulation:
                     1,
                     start_z + row * 2.5
                 )
-                vel = Vector(0, 0, 0)
+                
+                # Add small random velocities so they're not completely stationary
+                vel = Vector(
+                    (random.random() - 0.5) * 0.5,  # Small random x velocity
+                    0,
+                    (random.random() - 0.5) * 0.5   # Small random z velocity
+                )
                 
                 model = Model('./data/headset.obj')
                 model.normalizeGeometry()
@@ -186,15 +200,39 @@ class HeadsetSimulation:
                 
                 headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
         
-        # Add "cue ball" white headset
+        # Add "cue ball" white headsets from different angles
+        # Main "cue ball" from behind
         pos = Vector(0, 1, -25)
-        vel = Vector(0, 0, 8)
+        vel = Vector(0, 0, 5.5)  # Increased speed
         
         model = Model('./data/headset.obj')
         model.normalizeGeometry()
         model.setPosition(pos.x, pos.y, pos.z)
         
         colored_model = ColoredModel(model, diffuse_color=(255, 255, 255))
+        headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        
+        # Additional "cue balls" from sides to create more interesting collisions
+        # From left
+        pos = Vector(-18, 1, -15)
+        vel = Vector(3, 0, 0)  # Moving right
+        
+        model = Model('./data/headset.obj')
+        model.normalizeGeometry()
+        model.setPosition(pos.x, pos.y, pos.z)
+        
+        colored_model = ColoredModel(model, diffuse_color=(220, 220, 255))  # Slightly blue-tinted white
+        headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        
+        # From right (will enter scene later)
+        pos = Vector(18, 1, -10)
+        vel = Vector(-2.5, 0, -1)  # Moving left and slightly back
+        
+        model = Model('./data/headset.obj')
+        model.normalizeGeometry()
+        model.setPosition(pos.x, pos.y, pos.z)
+        
+        colored_model = ColoredModel(model, diffuse_color=(255, 220, 220))  # Slightly red-tinted white
         headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
         
         return headsets
@@ -245,34 +283,8 @@ class HeadsetSimulation:
         
         return screen_x, screen_y
 
-    # def update_main_headset(self, dt):
-    #     """Update main headset orientation based on IMU data with slower playback"""
-    #     if self.sensor_data and self.dr_filter:
-    #         # Only update orientation every few frames (adjust divisor to control speed)
-    #         if self.current_data_index < len(self.sensor_data) and self.frame_count % 3 == 0:
-    #             sensor_data = self.sensor_data[self.current_data_index]
-    #             self.current_data_index += 1
-                
-    #             orientation = self.dr_filter.update(sensor_data)
-    #             self.main_headset["model"].model.setQuaternionRotation(orientation)
-                
-    #             # Store rotation angles
-    #             roll, pitch, yaw = self.dr_filter.get_euler_angles()
-    #             self.main_headset["rotation"] = [roll, pitch, yaw]
-    #     else:
-    #         # Simple rotation if no IMU data
-    #         self.main_headset["rotation"][0] += dt * 0.33  # Slowed down
-    #         self.main_headset["rotation"][1] += dt * 0.5   # Slowed down
-    #         self.main_headset["rotation"][2] += dt * 0.27  # Slowed down
-            
-    #         self.main_headset["model"].model.setRotation(
-    #             self.main_headset["rotation"][0],
-    #             self.main_headset["rotation"][1],
-    #             self.main_headset["rotation"][2]
-    #         )
-        
     def update_floor_physics(self, dt):
-        """Update physics for floor headsets"""
+        """Update physics for floor headsets with more elastic collisions"""
         # Fixed timestep for consistent physics
         fixed_dt = 1/60.0
         self.accumulator += dt
@@ -283,7 +295,7 @@ class HeadsetSimulation:
             'max_x': 30.0,
             'min_z': -40.0,
             'max_z': 0.0,
-            'bounce_factor': 0.8
+            'bounce_factor': 0.9  # Increased from 0.8 to 0.9 (more elastic bounces)
         }
         
         while self.accumulator >= fixed_dt:
@@ -302,32 +314,64 @@ class HeadsetSimulation:
                 # Update position based on velocity
                 headset.update(fixed_dt)
                 
-                # Apply friction when on floor
+                # Apply friction when on floor, but only if moving fast enough
                 if headset.position.y - headset.radius <= 0.01:
                     # Ensure object doesn't go below floor
                     headset.position.y = headset.radius
                     
-                    # Apply friction
-                    headset.velocity.x *= self.friction_coefficient
-                    headset.velocity.z *= self.friction_coefficient
+                    # Calculate speed
+                    horizontal_speed_squared = headset.velocity.x**2 + headset.velocity.z**2
+                    
+                    # Apply friction only if moving at a reasonable speed
+                    if horizontal_speed_squared > 0.1:
+                        headset.velocity.x *= self.friction_coefficient
+                        headset.velocity.z *= self.friction_coefficient
+                    # Don't stop completely unless very slow
+                    elif horizontal_speed_squared < 0.01:
+                        headset.velocity.x = 0
+                        headset.velocity.z = 0
                 
                 # Apply boundary constraints
                 if headset.position.x - headset.radius < boundary['min_x']:
                     headset.position.x = boundary['min_x'] + headset.radius
                     headset.velocity.x = -headset.velocity.x * boundary['bounce_factor']
+                    
+                    # Add small random variation to z velocity on x boundary collision
+                    headset.velocity.z += (random.random() - 0.5) * 0.5
+                    
                 elif headset.position.x + headset.radius > boundary['max_x']:
                     headset.position.x = boundary['max_x'] - headset.radius
                     headset.velocity.x = -headset.velocity.x * boundary['bounce_factor']
+                    
+                    # Add small random variation to z velocity on x boundary collision
+                    headset.velocity.z += (random.random() - 0.5) * 0.5
                 
                 if headset.position.z - headset.radius < boundary['min_z']:
                     headset.position.z = boundary['min_z'] + headset.radius
                     headset.velocity.z = -headset.velocity.z * boundary['bounce_factor']
+                    
+                    # Add small random variation to x velocity on z boundary collision
+                    headset.velocity.x += (random.random() - 0.5) * 0.5
+                    
                 elif headset.position.z + headset.radius > boundary['max_z']:
                     headset.position.z = boundary['max_z'] - headset.radius
                     headset.velocity.z = -headset.velocity.z * boundary['bounce_factor']
+                    
+                    # Add small random variation to x velocity on z boundary collision
+                    headset.velocity.x += (random.random() - 0.5) * 0.5
                 
                 # Update model position
                 headset.model.model.setPosition(headset.position.x, headset.position.y, headset.position.z)
+            
+            # Every 60 frames (about 1 second), add small random impulses to keep things moving
+            if self.frame_count % 60 == 0 and self.frame_count < self.target_frames * 0.7:
+                for headset in self.floor_headsets:
+                    # Only add impulses to slow headsets
+                    speed_sq = headset.velocity.x**2 + headset.velocity.z**2
+                    if speed_sq < 2.0:
+                        # Add small random impulse
+                        headset.velocity.x += (random.random() - 0.5) * 0.8
+                        headset.velocity.z += (random.random() - 0.5) * 0.8
             
             self.accumulator -= fixed_dt
 
@@ -515,8 +559,12 @@ class HeadsetSimulation:
         self.image = Image(self.width, self.height, Color(20, 20, 40, 255))
         self.zBuffer = [-float('inf')] * self.width * self.height
         
-        # Render floor
-        self.render_floor()
+        # Render floor object first (so it's behind everything else)
+        if hasattr(self, 'floor_object') and self.floor_object:
+            self.render_model(self.floor_object)
+        else:
+            # Render simple floor if floor model failed to load
+            self.render_floor()
         
         # Render main headset
         self.render_model(self.main_headset["model"])
@@ -697,51 +745,6 @@ class HeadsetSimulation:
         if ffmpeg_path:
             print(f"High quality video saved to: {ffmpeg_path}")
 
-    # def run(self):
-    #     """Main simulation loop"""
-    #     clock = pygame.time.Clock()
-    #     running = True
-        
-    #     print("VR Headset Simulation")
-    #     print("Controls: B (blur), R (reset), P (pause), V (record), ESC (quit)")
-        
-    #     # Start recording automatically
-    #     self.start_recording()
-        
-    #     while running:
-    #         dt = min(clock.tick(60) / 1000.0, 0.1)
-            
-    #         # Track frame time for FPS
-    #         self.fps_history.append(dt)
-    #         if len(self.fps_history) > 20:
-    #             self.fps_history.pop(0)
-            
-    #         # Handle events
-    #         running = self.handle_events()
-            
-    #         # Skip updates if paused
-    #         if not self.paused:
-    #             # Update main headset
-    #             self.update_main_headset(dt)
-                
-    #             # Update floor headsets
-    #             self.update_floor_physics(dt)
-            
-    #         # Render the scene
-    #         self.render_scene()
-            
-    #         # Increment frame counter
-    #         self.frame_count += 1
-            
-    #         # Exit after 600 frames (20 seconds at 30fps)
-    #         if self.frame_count >= 600:
-    #             if self.is_recording:
-    #                 self.stop_recording()
-    #             break
-        
-    #     # Clean up
-    #     pygame.quit()
-    #     print(f"Simulation ended after {self.frame_count} frames")''
 
     def load_imu_data(self):
         """Load IMU data for headset rotation"""
@@ -756,10 +759,12 @@ class HeadsetSimulation:
                     self.sensor_data = parser.parse()
                     print(f"Loaded {len(self.sensor_data)} IMU data points")
                     
-                    # Calculate IMU playback rate based on dataset size
-                    total_frames = 810  # ~27 seconds at 30fps
-                    self.imu_playback_rate = max(1, len(self.sensor_data) / total_frames)
-                    print(f"IMU playback rate: {self.imu_playback_rate:.2f} samples per frame")
+                    # Calculate frames needed for 27 seconds at 30fps
+                    self.target_frames = 810  # ~27 seconds at 30fps
+                    
+                    # Calculate IMU samples to process per frame
+                    self.samples_per_frame = max(1, len(self.sensor_data) / self.target_frames)
+                    print(f"Using ~{self.samples_per_frame:.2f} IMU samples per frame for 27-second video")
                     
                     # Create and calibrate filter
                     self.dr_filter = DeadReckoningFilter(alpha=0.98)
@@ -773,16 +778,27 @@ class HeadsetSimulation:
         """Update main headset orientation based on IMU data - one sample per frame"""
         if self.sensor_data and self.dr_filter:
             if self.current_data_index < len(self.sensor_data):
-                # Process exactly one sample per frame
-                sensor_data = self.sensor_data[self.current_data_index]
-                self.current_data_index += 1
+            # Calculate how many samples to process this frame
+                samples_to_process = min(
+                    math.ceil(self.samples_per_frame),  # Round up to ensure we use all samples
+                    len(self.sensor_data) - self.current_data_index
+                )
                 
-                orientation = self.dr_filter.update(sensor_data)
+                # Process calculated number of samples
+                for _ in range(samples_to_process):
+                    sensor_data = self.sensor_data[self.current_data_index]
+                    self.current_data_index += 1
+                    orientation = self.dr_filter.update(sensor_data)
+                
+                # Apply the latest orientation
                 self.main_headset["model"].model.setQuaternionRotation(orientation)
                 
                 # Store rotation angles
                 roll, pitch, yaw = self.dr_filter.get_euler_angles()
                 self.main_headset["rotation"] = [roll, pitch, yaw]
+            
+            # Calculate progress percentage for display
+            self.imu_progress = min(100, (self.current_data_index / len(self.sensor_data)) * 100)
         else:
             # Simple rotation if no IMU data
             self.main_headset["rotation"][0] += dt * 1.0
@@ -831,10 +847,12 @@ class HeadsetSimulation:
             # Increment frame counter
             self.frame_count += 1
             
-            # Exit when all IMU data has been used
-            if self.sensor_data and self.current_data_index >= len(self.sensor_data):
+            # Exit either when all IMU data is used or we reach target frames
+            if (self.sensor_data and self.current_data_index >= len(self.sensor_data)) or \
+            self.frame_count >= self.target_frames:
                 if self.is_recording:
                     self.stop_recording()
+                print(f"Simulation finished after {self.frame_count} frames")
                 break
         
         # Clean up
