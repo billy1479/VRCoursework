@@ -47,7 +47,7 @@ class HeadsetSimulation:
         self.setup_scene()
         
         # Physics settings - Reduced friction significantly for longer movement
-        self.friction_coefficient = 0.95  # Changed from 0.98 to 0.995 (much less friction)
+        self.friction_coefficient = 0.935  # Changed from 0.98 to 0.995 (much less friction)
         self.accumulator = 0
         
         # Target frames for 27 seconds at 30fps
@@ -316,20 +316,30 @@ class HeadsetSimulation:
                 
                 # Apply friction when on floor, but only if moving fast enough
                 if headset.position.y - headset.radius <= 0.01:
-                    # Ensure object doesn't go below floor
                     headset.position.y = headset.radius
+        
+                    # Apply friction to horizontal velocity components
+                    horizontal_speed_squared = (
+                        headset.velocity.x**2 + 
+                        headset.velocity.z**2
+                    )
                     
-                    # Calculate speed
-                    horizontal_speed_squared = headset.velocity.x**2 + headset.velocity.z**2
-                    
-                    # Apply friction only if moving at a reasonable speed
-                    if horizontal_speed_squared > 0.1:
+                    # Only apply friction if moving horizontally
+                    if horizontal_speed_squared > 0.001:
+                        # Apply friction by reducing horizontal velocity
                         headset.velocity.x *= self.friction_coefficient
                         headset.velocity.z *= self.friction_coefficient
-                    # Don't stop completely unless very slow
-                    elif horizontal_speed_squared < 0.01:
-                        headset.velocity.x = 0
-                        headset.velocity.z = 0
+                        
+                        # Recalculate horizontal speed after applying friction
+                        new_horizontal_speed_squared = (
+                            headset.velocity.x**2 + 
+                            headset.velocity.z**2
+                        )
+                        
+                        # Stop completely if very slow after friction is applied
+                        if new_horizontal_speed_squared < 0.025:
+                            headset.velocity.x = 0
+                            headset.velocity.z = 0
                 
                 # Apply boundary constraints
                 if headset.position.x - headset.radius < boundary['min_x']:
