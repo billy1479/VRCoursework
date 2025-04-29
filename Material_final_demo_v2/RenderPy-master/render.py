@@ -31,7 +31,7 @@ class HeadsetSimulation:
         self.light_dir = Vector(0.5, -1, -0.5).normalize()
         
         # Motion blur
-        self.motion_blur = MotionBlurEffect(blur_strength=0.7)
+        self.motion_blur = MotionBlurEffect(blur_strength=0.8)
         self.blur_enabled = True
         
         # Video recorder
@@ -47,7 +47,7 @@ class HeadsetSimulation:
         self.setup_scene()
         
         # Physics settings - Reduced friction significantly for longer movement
-        self.friction_coefficient = 0.935  # Changed from 0.98 to 0.995 (much less friction)
+        self.friction_coefficient = 0.95  # Changed from 0.98 to 0.995 (much less friction)
         self.accumulator = 0
         
         # Target frames for 27 seconds at 30fps
