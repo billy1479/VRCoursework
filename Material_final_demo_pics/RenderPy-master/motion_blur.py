@@ -165,7 +165,7 @@ class MotionBlurEffect:
         result = deepcopy(image)
         
         # Process only fast-moving objects
-        velocity_threshold = 0.5
+        velocity_threshold = 0.2
         processed_regions = set()
         
         for obj in objects:
