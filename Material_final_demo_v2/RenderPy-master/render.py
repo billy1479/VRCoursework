@@ -11,7 +11,107 @@ from shape import Triangle, Point
 from color_support import ColoredModel
 from motion_blur import MotionBlurEffect
 from video_recorder import VideoRecorder
-
+class DepthOfFieldEffect:
+    def __init__(self, focal_distance=15.0, focal_range=5.0, blur_strength=1.0):
+        """
+        focal_distance: Distance at which objects are perfectly in focus
+        focal_range: Range around focal distance where objects remain relatively sharp
+        blur_strength: Overall intensity of the blur effect
+        """
+        self.focal_distance = focal_distance
+        self.focal_range = focal_range
+        self.blur_strength = blur_strength
+        self.enabled = True
+    
+    def process(self, image, z_buffer, width, height):
+        """Apply depth of field effect using the depth buffer"""
+        result = Image(width, height, Color(0, 0, 0, 255))
+        
+        # Create blur map based on depth
+        blur_map = self._create_blur_map(z_buffer, width, height)
+        
+        # Apply blur based on distance from focal plane
+        for y in range(height):
+            for x in range(width):
+                blur_radius = blur_map[y * width + x]
+                if blur_radius <= 0.5:
+                    # In focus - copy pixel directly
+                    self._copy_pixel(image, result, x, y)
+                else:
+                    # Out of focus - apply blur
+                    self._apply_blur(image, result, x, y, blur_radius)
+        
+        return result
+    
+    def _create_blur_map(self, z_buffer, width, height):
+        """Calculate blur amount for each pixel based on Z-depth"""
+        blur_map = [0] * (width * height)
+        
+        for i in range(len(z_buffer)):
+            depth = z_buffer[i]
+            if depth == -float('inf'):
+                blur_map[i] = self.blur_strength  # Background blur
+            else:
+                # Calculate blur based on distance from focal plane
+                distance_from_focal = abs(depth - self.focal_distance)
+                if distance_from_focal <= self.focal_range:
+                    # In focus region
+                    blur_factor = distance_from_focal / self.focal_range
+                    blur_map[i] = blur_factor * self.blur_strength * 0.5
+                else:
+                    # Out of focus region
+                    blur_factor = min(1.0, (distance_from_focal - self.focal_range) / self.focal_range)
+                    blur_map[i] = self.blur_strength * (0.5 + blur_factor)
+        
+        return blur_map
+    
+    def _copy_pixel(self, source, dest, x, y):
+        """Copy a pixel from source to destination image"""
+        idx = self._get_pixel_index(source, x, y)
+        if idx + 3 < len(source.buffer):
+            r = source.buffer[idx]
+            g = source.buffer[idx + 1]
+            b = source.buffer[idx + 2]
+            a = source.buffer[idx + 3]
+            dest.setPixel(x, y, Color(r, g, b, a))
+    
+    def _apply_blur(self, source, dest, x, y, blur_radius):
+        """Apply a simple box blur with the specified radius"""
+        width, height = source.width, source.height
+        r_sum, g_sum, b_sum = 0, 0, 0
+        count = 0
+        
+        # Define blur range
+        radius = max(1, min(5, int(blur_radius)))
+        
+        # Sample pixels in a square around the center
+        for by in range(max(0, y - radius), min(height, y + radius + 1)):
+            for bx in range(max(0, x - radius), min(width, x + radius + 1)):
+                idx = self._get_pixel_index(source, bx, by)
+                if idx + 2 < len(source.buffer):
+                    r_sum += source.buffer[idx]
+                    g_sum += source.buffer[idx + 1]
+                    b_sum += source.buffer[idx + 2]
+                    count += 1
+        
+        # Calculate average
+        if count > 0:
+            r = int(r_sum / count)
+            g = int(g_sum / count)
+            b = int(b_sum / count)
+            
+            # Get alpha from original pixel
+            idx = self._get_pixel_index(source, x, y)
+            a = source.buffer[idx + 3] if idx + 3 < len(source.buffer) else 255
+            
+            # Set blurred pixel
+            dest.setPixel(x, y, Color(r, g, b, a))
+    
+    def _get_pixel_index(self, image, x, y):
+        """Calculate index in the image buffer for a pixel"""
+        flipY = (image.height - y - 1)
+        index = (flipY * image.width + x) * 4 + flipY + 1
+        return index
 class HeadsetSimulation:
     def __init__(self, width=800, height=600):
         # Initialize pygame
@@ -26,8 +126,8 @@ class HeadsetSimulation:
         self.zBuffer = [-float('inf')] * width * height
         
         # Camera and lighting
-        self.camera_pos = Vector(0, 20, -50)
-        self.camera_target = Vector(0, 5, -15)
+        self.camera_pos = Vector(0, 10, 20)
+        self.camera_target = Vector(0, 5, -20)
         self.light_dir = Vector(0.5, -1, -0.5).normalize()
         
         # Motion blur
@@ -37,6 +137,9 @@ class HeadsetSimulation:
         # Video recorder
         self.video_recorder = VideoRecorder(width, height, fps=30)
         self.is_recording = False
+
+        self.depth_of_field = DepthOfFieldEffect(focal_distance=15.0, focal_range=2.0, blur_strength=2.5)
+        self.dof_enabled = True
         
         # Load IMU data
         self.load_imu_data()
@@ -49,7 +152,7 @@ class HeadsetSimulation:
         # Physics settings - Reduced friction significantly for longer movement
         self.friction_coefficient = 0.95  # Changed from 0.98 to 0.995 (much less friction)
         self.accumulator = 0
-        
+
         # Target frames for 27 seconds at 30fps
         self.target_frames = 1000
         
@@ -59,6 +162,37 @@ class HeadsetSimulation:
         self.fps_history = []
         self.paused = False
         self.imu_progress = 0
+
+    def draw_focal_plane(self):
+        """Draw a visual indicator of the current focal plane"""
+        # Calculate z-depth in world space
+        focal_z = -self.depth_of_field.focal_distance
+        
+        # Define corners of a rectangle at the focal plane
+        rect_size = 20
+        corners = [
+            Vector(-rect_size, 0, focal_z),
+            Vector(rect_size, 0, focal_z),
+            Vector(rect_size, rect_size*2, focal_z),
+            Vector(-rect_size, rect_size*2, focal_z)
+        ]
+        
+        # Project corners to screen space
+        screen_points = []
+        for point in corners:
+            screen_x, screen_y = self.perspective_projection(point.x, point.y, point.z)
+            if screen_x >= 0 and screen_y >= 0:
+                screen_points.append((screen_x, screen_y))
+        
+        # Draw outline if we have enough points
+        if len(screen_points) >= 4:
+            pygame.draw.lines(
+                self.screen,
+                (0, 255, 255),  # Cyan color
+                True,  # Closed shape
+                screen_points,
+                2  # Line width
+            )
 
     def create_synthetic_imu_data(self):
         """Create synthetic IMU data if no real data available"""
@@ -128,114 +262,232 @@ class HeadsetSimulation:
         self.floor_headsets = self.create_floor_headsets()
 
     def create_floor_headsets(self):
-        """Create sliding headsets that will collide on the floor with higher initial velocities"""
+        """Create headsets arranged to demonstrate depth of field effect"""
         headsets = []
+        colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), 
+                (255, 0, 255), (0, 255, 255), (255, 165, 0), (128, 0, 128)]
         
-        # Colors for different headsets
-        colors = [
-            (255, 0, 0),    # Red
-            (0, 255, 0),    # Green
-            (0, 0, 255),    # Blue
-            (255, 255, 0),  # Yellow
-            (255, 0, 255),  # Magenta
-            (0, 255, 255),  # Cyan
-            (255, 165, 0),  # Orange
-            (128, 0, 128)   # Purple
-        ]
+        # Set focal plane exactly at z = -15 (matching our initial focal_distance)
+        focal_z = -15.0
         
-        # Circle of headsets moving inward - Higher velocities
-        num_circle = 8
-        circle_radius = 20
-        for i in range(num_circle):
-            angle = (i / num_circle) * 2 * math.pi
-            pos = Vector(
-                circle_radius * math.cos(angle),
-                1,
-                circle_radius * math.sin(angle) - 10
-            )
-            
-            # Set higher velocity for longer movement
-            speed = 3 + (i % 3)  # Increased speed
-            vel = Vector(
-                -math.cos(angle) * speed,
-                0,
-                -math.sin(angle) * speed
-            )
-            
+        # Create a row of headsets AT the focal plane (these should be sharp)
+        for x in range(-12, 13, 4):
+            pos = Vector(x, 1, focal_z)
             model = Model('./data/headset.obj')
             model.normalizeGeometry()
             model.setPosition(pos.x, pos.y, pos.z)
-            
-            # Create a colored model for this headset
-            colored_model = ColoredModel(model, diffuse_color=colors[i % len(colors)])
-            
-            # Create collision object
-            headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+            # White headsets at the focal plane
+            colored_model = ColoredModel(model, diffuse_color=(255, 255, 255))
+            headsets.append(CollisionObject(colored_model, pos, Vector(0, 0, 0), radius=1.0))
         
-        # Triangle formation of headsets with small initial velocities
-        triangle_size = 3
-        start_z = -5
-        color_index = 0
-        for row in range(triangle_size):
-            for col in range(row + 1):
-                pos = Vector(
-                    (col - row/2) * 2.5,
-                    1,
-                    start_z + row * 2.5
-                )
-                
-                # Add small random velocities so they're not completely stationary
-                vel = Vector(
-                    (random.random() - 0.5) * 0.5,  # Small random x velocity
-                    0,
-                    (random.random() - 0.5) * 0.5   # Small random z velocity
-                )
-                
+        # Create headsets in front of focal plane (should be blurred)
+        for x in range(-10, 11, 5):
+            for z_offset in [5, 10]:  # 5 and 10 units closer than focal plane
+                pos = Vector(x, 1, focal_z + z_offset)  # Adding makes it closer to camera
                 model = Model('./data/headset.obj')
                 model.normalizeGeometry()
                 model.setPosition(pos.x, pos.y, pos.z)
-                
-                colored_model = ColoredModel(model, diffuse_color=colors[color_index % len(colors)])
-                color_index += 1
-                
-                headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+                # Red headsets in front of focal plane
+                colored_model = ColoredModel(model, diffuse_color=(255, 0, 0))
+                headsets.append(CollisionObject(colored_model, pos, Vector(0, 0, 0), radius=1.0))
         
-        # Add "cue ball" white headsets from different angles
-        # Main "cue ball" from behind
-        pos = Vector(0, 1, -25)
-        vel = Vector(0, 0, 5.5)  # Increased speed
-        
-        model = Model('./data/headset.obj')
-        model.normalizeGeometry()
-        model.setPosition(pos.x, pos.y, pos.z)
-        
-        colored_model = ColoredModel(model, diffuse_color=(255, 255, 255))
-        headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
-        
-        # Additional "cue balls" from sides to create more interesting collisions
-        # From left
-        pos = Vector(-18, 1, -15)
-        vel = Vector(3, 0, 0)  # Moving right
-        
-        model = Model('./data/headset.obj')
-        model.normalizeGeometry()
-        model.setPosition(pos.x, pos.y, pos.z)
-        
-        colored_model = ColoredModel(model, diffuse_color=(220, 220, 255))  # Slightly blue-tinted white
-        headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
-        
-        # From right (will enter scene later)
-        pos = Vector(18, 1, -10)
-        vel = Vector(-2.5, 0, -1)  # Moving left and slightly back
-        
-        model = Model('./data/headset.obj')
-        model.normalizeGeometry()
-        model.setPosition(pos.x, pos.y, pos.z)
-        
-        colored_model = ColoredModel(model, diffuse_color=(255, 220, 220))  # Slightly red-tinted white
-        headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        # Create headsets behind focal plane (should be blurred)
+        for x in range(-10, 11, 5):
+            for z_offset in [5, 10]:  # 5 and 10 units farther than focal plane
+                pos = Vector(x, 1, focal_z - z_offset)  # Subtracting makes it farther from camera
+                model = Model('./data/headset.obj')
+                model.normalizeGeometry()
+                model.setPosition(pos.x, pos.y, pos.z)
+                # Blue headsets behind focal plane
+                colored_model = ColoredModel(model, diffuse_color=(0, 0, 255))
+                headsets.append(CollisionObject(colored_model, pos, Vector(0, 0, 0), radius=1.0))
         
         return headsets
+
+    # def create_floor_headsets(self):
+    #     """Create sliding headsets that will collide on the floor with higher initial velocities"""
+    #     headsets = []
+        
+    #     # Colors for different headsets
+    #     colors = [
+    #         (255, 0, 0),    # Red
+    #         (0, 255, 0),    # Green
+    #         (0, 0, 255),    # Blue
+    #         (255, 255, 0),  # Yellow
+    #         (255, 0, 255),  # Magenta
+    #         (0, 255, 255),  # Cyan
+    #         (255, 165, 0),  # Orange
+    #         (128, 0, 128)   # Purple
+    #     ]
+        
+    #     # Circle of headsets moving inward - Higher velocities
+    #     num_circle = 8
+    #     circle_radius = 20
+    #     for i in range(num_circle):
+    #         angle = (i / num_circle) * 2 * math.pi
+    #         pos = Vector(
+    #             circle_radius * math.cos(angle),
+    #             1,
+    #             circle_radius * math.sin(angle) - 10
+    #         )
+            
+    #         # Set higher velocity for longer movement
+    #         speed = 3 + (i % 3)  # Increased speed
+    #         vel = Vector(
+    #             -math.cos(angle) * speed,
+    #             0,
+    #             -math.sin(angle) * speed
+    #         )
+            
+    #         model = Model('./data/headset.obj')
+    #         model.normalizeGeometry()
+    #         model.setPosition(pos.x, pos.y, pos.z)
+            
+    #         # Create a colored model for this headset
+    #         colored_model = ColoredModel(model, diffuse_color=colors[i % len(colors)])
+            
+    #         # Create collision object
+    #         headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        
+    #     # Triangle formation of headsets with small initial velocities
+    #     triangle_size = 3
+    #     start_z = -5
+    #     color_index = 0
+    #     for row in range(triangle_size):
+    #         for col in range(row + 1):
+    #             pos = Vector(
+    #                 (col - row/2) * 2.5,
+    #                 1,
+    #                 start_z + row * 2.5
+    #             )
+                
+    #             # Add small random velocities so they're not completely stationary
+    #             vel = Vector(
+    #                 (random.random() - 0.5) * 0.5,  # Small random x velocity
+    #                 0,
+    #                 (random.random() - 0.5) * 0.5   # Small random z velocity
+    #             )
+                
+    #             model = Model('./data/headset.obj')
+    #             model.normalizeGeometry()
+    #             model.setPosition(pos.x, pos.y, pos.z)
+                
+    #             colored_model = ColoredModel(model, diffuse_color=colors[color_index % len(colors)])
+    #             color_index += 1
+                
+    #             headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        
+    #     # Add "cue ball" white headsets from different angles
+    #     # Main "cue ball" from behind
+    #     pos = Vector(0, 1, -25)
+    #     vel = Vector(0, 0, 5.5)  # Increased speed
+        
+    #     model = Model('./data/headset.obj')
+    #     model.normalizeGeometry()
+    #     model.setPosition(pos.x, pos.y, pos.z)
+        
+    #     colored_model = ColoredModel(model, diffuse_color=(255, 255, 255))
+    #     headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        
+    #     # Additional "cue balls" from sides to create more interesting collisions
+    #     # From left
+    #     pos = Vector(-18, 1, -15)
+    #     vel = Vector(3, 0, 0)  # Moving right
+        
+    #     model = Model('./data/headset.obj')
+    #     model.normalizeGeometry()
+    #     model.setPosition(pos.x, pos.y, pos.z)
+        
+    #     colored_model = ColoredModel(model, diffuse_color=(220, 220, 255))  # Slightly blue-tinted white
+    #     headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        
+    #     # From right (will enter scene later)
+    #     pos = Vector(18, 1, -10)
+    #     vel = Vector(-2.5, 0, -1)  # Moving left and slightly back
+        
+    #     model = Model('./data/headset.obj')
+    #     model.normalizeGeometry()
+    #     model.setPosition(pos.x, pos.y, pos.z)
+        
+    #     colored_model = ColoredModel(model, diffuse_color=(255, 220, 220))  # Slightly red-tinted white
+    #     headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        
+    #     return headsets
+
+    # def create_floor_headsets(self):
+    #     """Create headsets arranged to demonstrate depth of field effect"""
+    #     headsets = []
+        
+    #     # Colors for different headsets
+    #     colors = [
+    #         (255, 0, 0),    # Red
+    #         (0, 255, 0),    # Green
+    #         (0, 0, 255),    # Blue
+    #         (255, 255, 0),  # Yellow
+    #         (255, 0, 255),  # Magenta
+    #         (0, 255, 255),  # Cyan
+    #         (255, 165, 0),  # Orange
+    #         (128, 0, 128)   # Purple
+    #     ]
+        
+    #     # Create a line of headsets receding into the distance
+    #     # This will clearly show focal plane and DoF effect
+    #     num_line = 12
+    #     z_start = -5
+    #     z_step = -3
+        
+    #     for i in range(num_line):
+    #         pos = Vector(
+    #             0,  # Centered on x-axis
+    #             1,  # Just above the floor
+    #             z_start + (z_step * i)  # Receding into distance
+    #         )
+            
+    #         # No initial velocity
+    #         vel = Vector(0, 0, 0)
+            
+    #         model = Model('./data/headset.obj')
+    #         model.normalizeGeometry()
+    #         model.setPosition(pos.x, pos.y, pos.z)
+            
+    #         # Create a colored model for this headset
+    #         colored_model = ColoredModel(model, diffuse_color=colors[i % len(colors)])
+            
+    #         # Create collision object
+    #         headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        
+    #     # Add headsets at different depths on both sides
+    #     for i in range(6):
+    #         z_pos = -10 - (i * 5)
+            
+    #         # Left side
+    #         left_pos = Vector(-8, 1, z_pos)
+    #         left_model = Model('./data/headset.obj')
+    #         left_model.normalizeGeometry()
+    #         left_model.setPosition(left_pos.x, left_pos.y, left_pos.z)
+    #         left_colored = ColoredModel(left_model, diffuse_color=(255, 0, 0))  # Red
+    #         headsets.append(CollisionObject(left_colored, left_pos, Vector(0, 0, 0), radius=1.0))
+            
+    #         # Right side
+    #         right_pos = Vector(8, 1, z_pos)
+    #         right_model = Model('./data/headset.obj')
+    #         right_model.normalizeGeometry()
+    #         right_model.setPosition(right_pos.x, right_pos.y, right_pos.z)
+    #         right_colored = ColoredModel(right_model, diffuse_color=(0, 0, 255))  # Blue
+    #         headsets.append(CollisionObject(right_colored, right_pos, Vector(0, 0, 0), radius=1.0))
+        
+    #     # Additionally, add a focal plane indicator at initial focal distance
+    #     focal_plane_z = -self.depth_of_field.focal_distance
+    #     for x in range(-15, 16, 5):
+    #         pos = Vector(x, 1, focal_plane_z)
+    #         model = Model('./data/headset.obj')
+    #         model.normalizeGeometry()
+    #         model.setPosition(pos.x, pos.y, pos.z)
+    #         # Use white for focal plane objects
+    #         colored_model = ColoredModel(model, diffuse_color=(255, 255, 255))
+    #         headsets.append(CollisionObject(colored_model, pos, Vector(0, 0, 0), radius=1.0))
+        
+    #     return headsets
 
     def perspective_projection(self, x, y, z, width=None, height=None):
         """Project 3D coordinates to 2D screen space"""
@@ -582,6 +834,10 @@ class HeadsetSimulation:
         # Render floor headsets
         for headset in self.floor_headsets:
             self.render_model(headset.model)
+
+        if self.dof_enabled:
+            self.image = self.depth_of_field.process(self.image, self.zBuffer, self.width, self.height)
+    
         
         # Apply motion blur if enabled
         if self.blur_enabled:
@@ -608,6 +864,7 @@ class HeadsetSimulation:
         
         # Draw boundary and debug info
         self.render_boundaries()
+        self.draw_focal_plane()
         self.draw_debug_info()
         
         # Update display
@@ -674,6 +931,12 @@ class HeadsetSimulation:
             True, (255, 255, 255)
         )
         self.screen.blit(blur_text, (10, 35))
+
+        dof_text = self.font.render(
+            f"Depth of Field: {'ON' if self.dof_enabled else 'OFF'} (Focal: {self.depth_of_field.focal_distance:.1f}, Range: {self.depth_of_field.focal_range:.1f})",
+            True, (255, 255, 255)
+        )
+        self.screen.blit(dof_text, (10, 60))
         
         # Display IMU progress if using sensor data
         if hasattr(self, 'sensor_data') and self.sensor_data:
@@ -682,7 +945,7 @@ class HeadsetSimulation:
                 f"IMU Data: {self.current_data_index}/{len(self.sensor_data)} ({progress:.1f}%)",
                 True, (255, 255, 255)
             )
-            self.screen.blit(imu_text, (10, 60))
+            self.screen.blit(imu_text, (10, 85))
         
         # Display recording status
         if self.is_recording:

@@ -3393,11 +3393,803 @@ class MotionBlurHeadsetDemo:
         # Clean up
         pygame.quit()
 
+class MotionBlurHorizontalHeadsetDemo:
+    """
+    A focused demonstration of motion blur with a single headset moving horizontally across the screen.
+    This provides a clear visualization of the motion blur effect on fast-moving objects.
+    """
+    def __init__(self, width=800, height=600, output_dir="horizontal_blur_demo"):
+        # Initialize pygame
+        pygame.init()
+        self.width = width
+        self.height = height
+        self.screen = pygame.display.set_mode((width, height))
+        pygame.display.set_caption("Motion Blur Horizontal Headset Demo")
+        
+        # Image and Z-buffer
+        self.image = Image(width, height, Color(20, 20, 40, 255))
+        self.zBuffer = [-float('inf')] * width * height
+        
+        # Camera positioned to view the horizontal movement from a good angle
+        # Positioned more to the side to better see the horizontal movement
+        self.camera_pos = Vector(20, 15, 20)  # More to the side and higher up
+        self.camera_target = Vector(0, 5, 0)  # Looking at the center of the scene
+        self.light_dir = Vector(0.5, -1, -0.5).normalize()
+        
+        # Motion blur - MUCH HIGHER strength for very visible effect
+        # Increased from 1.5 to 4.0 for dramatic effect
+        self.motion_blur = MotionBlurEffect(blur_strength=4.0, velocity_scale=3.0, max_samples=16)
+        self.blur_enabled = True
+        
+        # Create output directory for saved frames
+        self.output_dir = output_dir
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
+        # Video recorder for saving the demo
+        self.video_recorder = VideoRecorder(width, height, fps=30)
+        
+        # Display settings
+        self.font = pygame.font.SysFont('Arial', 18)
+        self.frame_count = 0
+        self.split_view_mode = True  # Show split screen for comparison
+        
+        # Setup the scene with a single headset
+        self.headset = None
+        self.reference_markers = []
+        self.setup_scene()
+    
+    def setup_scene(self):
+        """Set up the scene with a single headset that will move horizontally across the screen"""
+        # Create the main headset
+        model = Model('./data/headset.obj')
+        model.normalizeGeometry()
+        
+        # Initial position - far left of the scene
+        position = Vector(-20, 5, 0)  # Start at left side
+        model.setPosition(position.x, position.y, position.z)
+        
+        # Velocity - MUCH FASTER horizontal movement for very visible blur
+        velocity = Vector(20.0, 0.0, 0.0)  # Increased from 8.0 to 20.0 for extreme blur
+        
+        # Create colored model - bright red for visibility
+        colored_model = ColoredModel(model, diffuse_color=(255, 0, 0))
+        
+        # Make the headset larger for better visibility of the blur effect
+        model.scale = [2.0, 2.0, 2.0]  # Double the size
+        model.updateTransform()
+        
+        # Create collision object (though we won't use collision in this demo)
+        self.headset = CollisionObject(colored_model, position, velocity, radius=2.0)  # Increased radius to match scale
+        
+        # Add reference markers along the path to help show movement
+        for x in range(-20, 21, 5):
+            marker_position = Vector(x, 0, 0)  # Along floor
+            marker_radius = 0.5
+            self.reference_markers.append((marker_position, marker_radius))
+            
+            # Also add some offset markers to give spatial reference
+            self.reference_markers.append((Vector(x, 3, 5), 0.3))
+            self.reference_markers.append((Vector(x, 3, -5), 0.3))
+        
+        # Add depth reference markers
+        for z in range(-15, 16, 5):
+            if z != 0:  # Skip center line which already has markers
+                self.reference_markers.append((Vector(0, 0, z), 0.5))
+        
+        # Load floor model or create a simple grid floor
+        try:
+            floor_model = Model('./data/floor.obj')
+            floor_model.normalizeGeometry()
+            floor_model.setPosition(0, 0, 0)
+            floor_model.scale = [50.0, 1.0, 30.0]  # Extended for horizontal movement
+            floor_model.updateTransform()
+            self.floor_object = ColoredModel(floor_model, diffuse_color=(150, 150, 150))
+            print("Floor model loaded successfully")
+        except Exception as e:
+            print(f"Error loading floor model: {e}")
+            self.floor_object = None
+    
+    def perspective_projection(self, x, y, z, width=None, height=None):
+        """Project 3D coordinates to 2D screen space"""
+        if width is None:
+            width = self.width
+        if height is None:
+            height = self.height
+        
+        # Calculate vector from camera to point
+        to_point = Vector(
+            x - self.camera_pos.x,
+            y - self.camera_pos.y,
+            z - self.camera_pos.z
+        )
+        
+        # Camera orientation vectors
+        forward = Vector(
+            self.camera_target.x - self.camera_pos.x,
+            self.camera_target.y - self.camera_pos.y,
+            self.camera_target.z - self.camera_pos.z
+        ).normalize()
+        
+        world_up = Vector(0, 1, 0)
+        right = forward.cross(world_up).normalize()
+        up = right.cross(forward).normalize()
+        
+        # Project point onto camera vectors
+        right_comp = to_point * right
+        up_comp = to_point * up
+        forward_comp = to_point * forward
+        
+        if forward_comp < 0.1:
+            return -1, -1
+        
+        # Apply perspective projection
+        fov = math.pi / 3.0
+        aspect = width / height
+        
+        x_ndc = right_comp / (forward_comp * math.tan(fov/2) * aspect)
+        y_ndc = up_comp / (forward_comp * math.tan(fov/2))
+        
+        # Convert to screen coordinates
+        screen_x = int((x_ndc + 1.0) * width / 2.0)
+        screen_y = int((-y_ndc + 1.0) * height / 2.0)
+        
+        return screen_x, screen_y
+    
+    def render_floor(self, target_image=None, target_zbuffer=None):
+        """Render a simple floor grid"""
+        # Use provided targets or default to self.image and self.zBuffer
+        target_image = target_image if target_image is not None else self.image
+        target_zbuffer = target_zbuffer if target_zbuffer is not None else self.zBuffer
+        
+        size_x = 50
+        size_z = 30
+        height = 0
+        
+        # Floor corners
+        corners = [
+            Vector(-size_x, height, -size_z),  # Back left
+            Vector(size_x, height, -size_z),   # Back right
+            Vector(size_x, height, size_z),    # Front right
+            Vector(-size_x, height, size_z)    # Front left
+        ]
+        
+        # Create floor points
+        p0 = Point(corners[0].x, corners[0].y, corners[0].z)
+        p1 = Point(corners[1].x, corners[1].y, corners[1].z)
+        p2 = Point(corners[2].x, corners[2].y, corners[2].z)
+        p3 = Point(corners[3].x, corners[3].y, corners[3].z)
+        
+        # Set normal and color
+        normal = Vector(0, 1, 0)
+        for p in [p0, p1, p2, p3]:
+            p.normal = normal
+            p.color = Color(100, 100, 100, 255)
+        
+        # Create a Triangle instance
+        triangle1 = Triangle(p0, p1, p2)
+        triangle2 = Triangle(p0, p2, p3)
+        
+        # Iterate over all points in the bounding box of each triangle
+        for triangle in [triangle1, triangle2]:
+            # Calculate bounding box
+            ymin = max(min(triangle.p0.y, triangle.p1.y, triangle.p2.y), 0)
+            ymax = min(max(triangle.p0.y, triangle.p1.y, triangle.p2.y), target_image.height - 1)
+            
+            # Convert to integers for range()
+            ymin_int = int(ymin)
+            ymax_int = int(ymax)
+            
+            # Iterate over scan lines in the bounding box
+            for y in range(ymin_int, ymax_int + 1):
+                # Find intersections with edges
+                x_values = []
+                for edge_start, edge_end in [(triangle.p0, triangle.p1), (triangle.p1, triangle.p2), (triangle.p2, triangle.p0)]:
+                    if (edge_start.y <= y <= edge_end.y) or (edge_end.y <= y <= edge_start.y):
+                        if edge_end.y == edge_start.y:  # Skip horizontal edges
+                            continue
+                        
+                        # Calculate intersection point
+                        if edge_start.y == y:
+                            x_values.append(edge_start.x)
+                        elif edge_end.y == y:
+                            x_values.append(edge_end.x)
+                        else:
+                            t = (y - edge_start.y) / (edge_end.y - edge_start.y)
+                            x = edge_start.x + t * (edge_end.x - edge_start.x)
+                            x_values.append(x)
+                
+                if len(x_values) > 0:
+                    # Sort and convert to integers
+                    if len(x_values) == 1:
+                        x_start = x_values[0]
+                        x_end = x_start
+                    else:
+                        x_start, x_end = sorted(x_values)[:2]
+                    
+                    x_start_int = max(int(x_start), 0)
+                    x_end_int = min(int(x_end), target_image.width - 1)
+                    
+                    # Draw horizontal span
+                    for x in range(x_start_int, x_end_int + 1):
+                        point = Point(x, y, color=None)
+                        in_triangle, color, z_value = triangle.contains_point(point)
+                        
+                        if in_triangle:
+                            # Perform z-buffer check
+                            buffer_index = y * target_image.width + x
+                            if buffer_index < len(target_zbuffer) and target_zbuffer[buffer_index] < z_value:
+                                target_zbuffer[buffer_index] = z_value
+                                target_image.setPixel(x, y, color)
+        
+        # Add grid lines for better depth perception
+        grid_spacing = 10
+        
+        # Draw lines parallel to Z axis (along X)
+        for i in range(-size_x, size_x + 1, grid_spacing):
+            # Draw lines along Z axis
+            start_x = Vector(i, height + 0.01, -size_z)
+            end_x = Vector(i, height + 0.01, size_z)
+            
+            # Project to screen
+            start_screen_x, start_screen_y = self.perspective_projection(start_x.x, start_x.y, start_x.z)
+            end_screen_x, end_screen_y = self.perspective_projection(end_x.x, end_x.y, end_x.z)
+            
+            if start_screen_x >= 0 and end_screen_x >= 0:
+                # Draw line as a series of points (simple approach)
+                line_length = math.sqrt((end_screen_x - start_screen_x)**2 + (end_screen_y - start_screen_y)**2)
+                if line_length > 0:
+                    steps = max(10, int(line_length / 2))
+                    for step in range(steps + 1):
+                        t = step / steps
+                        x = int(start_screen_x + (end_screen_x - start_screen_x) * t)
+                        y = int(start_screen_y + (end_screen_y - start_screen_y) * t)
+                        z = start_x.z + (end_x.z - start_x.z) * t
+                        
+                        if 0 <= x < target_image.width and 0 <= y < target_image.height:
+                            buffer_index = y * target_image.width + x
+                            if buffer_index < len(target_zbuffer) and target_zbuffer[buffer_index] < z:
+                                target_zbuffer[buffer_index] = z
+                                target_image.setPixel(x, y, Color(50, 50, 50, 255))
+        
+        # Add cross grid lines (parallel to X axis, along Z)
+        for i in range(-size_z, size_z + 1, grid_spacing):
+            # Draw lines along X axis
+            start_z = Vector(-size_x, height + 0.01, i)
+            end_z = Vector(size_x, height + 0.01, i)
+            
+            # Project to screen
+            start_screen_x, start_screen_y = self.perspective_projection(start_z.x, start_z.y, start_z.z)
+            end_screen_x, end_screen_y = self.perspective_projection(end_z.x, end_z.y, end_z.z)
+            
+            if start_screen_x >= 0 and end_screen_x >= 0:
+                # Draw line as a series of points
+                line_length = math.sqrt((end_screen_x - start_screen_x)**2 + (end_screen_y - start_screen_y)**2)
+                if line_length > 0:
+                    steps = max(10, int(line_length / 2))
+                    for step in range(steps + 1):
+                        t = step / steps
+                        x = int(start_screen_x + (end_screen_x - start_screen_x) * t)
+                        y = int(start_screen_y + (end_screen_y - start_screen_y) * t)
+                        z = start_z.z
+                        
+                        if 0 <= x < target_image.width and 0 <= y < target_image.height:
+                            buffer_index = y * target_image.width + x
+                            if buffer_index < len(target_zbuffer) and target_zbuffer[buffer_index] < z:
+                                target_zbuffer[buffer_index] = z
+                                target_image.setPixel(x, y, Color(50, 50, 50, 255))
+                                
+        # Draw a highlighted path for the headset to follow
+        path_z = 0  # The z-coordinate of the headset path
+        path_y = height + 0.02  # Slightly above the floor
+        
+        start_path = Vector(-size_x, path_y, path_z)
+        end_path = Vector(size_x, path_y, path_z)
+        
+        # Project to screen
+        start_screen_x, start_screen_y = self.perspective_projection(start_path.x, start_path.y, start_path.z)
+        end_screen_x, end_screen_y = self.perspective_projection(end_path.x, end_path.y, end_path.z)
+        
+        if start_screen_x >= 0 and end_screen_x >= 0:
+            # Draw a thicker, highlighted path
+            line_length = math.sqrt((end_screen_x - start_screen_x)**2 + (end_screen_y - start_screen_y)**2)
+            if line_length > 0:
+                steps = max(20, int(line_length))
+                for step in range(steps + 1):
+                    t = step / steps
+                    x = int(start_screen_x + (end_screen_x - start_screen_x) * t)
+                    y = int(start_screen_y + (end_screen_y - start_screen_y) * t)
+                    z = start_path.z
+                    
+                    # Draw a 3-pixel wide line
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            px = x + dx
+                            py = y + dy
+                            if 0 <= px < target_image.width and 0 <= py < target_image.height:
+                                buffer_index = py * target_image.width + px
+                                if buffer_index < len(target_zbuffer) and target_zbuffer[buffer_index] < z:
+                                    target_zbuffer[buffer_index] = z
+                                    target_image.setPixel(px, py, Color(200, 200, 50, 255))
+                                
+    def render_model(self, model_obj, target_image=None, target_zbuffer=None):
+        """Render a 3D model with lighting"""
+        # Use provided targets or default to self.image and self.zBuffer
+        target_image = target_image if target_image is not None else self.image
+        target_zbuffer = target_zbuffer if target_zbuffer is not None else self.zBuffer
+        
+        # Get the actual model (handle both direct models and ColoredModel objects)
+        model = getattr(model_obj, 'model', model_obj)
+        
+        # Precalculate transformed vertices
+        transformed_vertices = []
+        for i in range(len(model.vertices)):
+            vertex = model.getTransformedVertex(i)
+            transformed_vertices.append(vertex)
+        
+        # Calculate face normals and vertex normals
+        face_normals = {}
+        for face in model.faces:
+            v0 = transformed_vertices[face[0]]
+            v1 = transformed_vertices[face[1]]
+            v2 = transformed_vertices[face[2]]
+            
+            edge1 = Vector(v1.x - v0.x, v1.y - v0.y, v1.z - v0.z)
+            edge2 = Vector(v2.x - v0.x, v2.y - v0.y, v2.z - v0.z)
+            normal = edge1.cross(edge2).normalize()
+            
+            for i in face:
+                if i not in face_normals:
+                    face_normals[i] = []
+                face_normals[i].append(normal)
+        
+        vertex_normals = []
+        for vert_idx in range(len(model.vertices)):
+            if vert_idx in face_normals:
+                normal = Vector(0, 0, 0)
+                for face_normal in face_normals[vert_idx]:
+                    normal = normal + face_normal
+                vertex_normals.append(normal.normalize())
+            else:
+                vertex_normals.append(Vector(0, 1, 0))
+        
+        # Get model color
+        if hasattr(model_obj, 'diffuse_color'):
+            model_color = model_obj.diffuse_color
+        elif hasattr(model, 'diffuse_color'):
+            model_color = model.diffuse_color
+        else:
+            model_color = (200, 200, 200)
+        
+        # Render faces
+        for face in model.faces:
+            v0 = transformed_vertices[face[0]]
+            v1 = transformed_vertices[face[1]]
+            v2 = transformed_vertices[face[2]]
+            
+            n0 = vertex_normals[face[0]]
+            n1 = vertex_normals[face[1]]
+            n2 = vertex_normals[face[2]]
+            
+            # Backface culling
+            avg_normal = (n0 + n1 + n2).normalize()
+            view_dir = Vector(
+                self.camera_pos.x - (v0.x + v1.x + v2.x) / 3,
+                self.camera_pos.y - (v0.y + v1.y + v2.y) / 3,
+                self.camera_pos.z - (v0.z + v1.z + v2.z) / 3
+            ).normalize()
+            
+            if avg_normal * view_dir <= 0:
+                continue
+            
+            # Create triangle points
+            triangle_points = []
+            for v, n in zip([v0, v1, v2], [n0, n1, n2]):
+                screen_x, screen_y = self.perspective_projection(v.x, v.y, v.z)
+                
+                if screen_x < 0 or screen_y < 0 or screen_x >= self.width or screen_y >= self.height:
+                    continue
+                
+                # Calculate lighting
+                intensity = max(0.2, n * self.light_dir)
+                
+                r, g, b = model_color
+                color = Color(
+                    int(r * intensity),
+                    int(g * intensity),
+                    int(b * intensity),
+                    255
+                )
+                
+                point = Point(int(screen_x), int(screen_y), v.z, color)
+                point.normal = n
+                triangle_points.append(point)
+            
+            # Render triangle if all points are valid
+            if len(triangle_points) == 3:
+                # Create a Triangle instance and draw it
+                triangle = Triangle(triangle_points[0], triangle_points[1], triangle_points[2])
+                triangle.draw_faster(target_image, target_zbuffer)
+    
+    def render_marker(self, position, radius, color=(255, 255, 255), target_image=None, target_zbuffer=None):
+        """Render a simple marker at the given position"""
+        # Use provided targets or default to self.image and self.zBuffer
+        target_image = target_image if target_image is not None else self.image
+        target_zbuffer = target_zbuffer if target_zbuffer is not None else self.zBuffer
+        
+        # Project sphere center to screen
+        screen_x, screen_y = self.perspective_projection(position.x, position.y, position.z)
+        
+        # Skip if off-screen
+        if screen_x < 0 or screen_y < 0 or screen_x >= self.width or screen_y >= self.height:
+            return
+        
+        # Calculate projected radius (rough approximation)
+        distance = (position - self.camera_pos).length()
+        screen_radius = int(radius * 200 / distance)  # Simple projection
+        
+        # Skip if too small
+        if screen_radius < 1:
+            return
+        
+        # Draw sphere as a filled circle
+        for y in range(max(0, screen_y - screen_radius), min(self.height, screen_y + screen_radius + 1)):
+            for x in range(max(0, screen_x - screen_radius), min(self.width, screen_x + screen_radius + 1)):
+                dx = x - screen_x
+                dy = y - screen_y
+                dist_sq = dx*dx + dy*dy
+                
+                if dist_sq <= screen_radius * screen_radius:
+                    # Calculate z using sphere equation
+                    t = 1.0 - dist_sq / (screen_radius * screen_radius)
+                    z = position.z - radius + 2 * radius * t
+                    
+                    # Perform z-buffer check
+                    buffer_index = y * self.width + x
+                    if buffer_index < len(target_zbuffer) and target_zbuffer[buffer_index] < z:
+                        target_zbuffer[buffer_index] = z
+                        
+                        # Simple lighting
+                        intensity = 0.5 + 0.5 * t  # Higher in center
+                        r, g, b = color
+                        lit_color = Color(
+                            int(r * intensity),
+                            int(g * intensity),
+                            int(b * intensity),
+                            255
+                        )
+                        target_image.setPixel(x, y, lit_color)
+    
+    def render_scene(self):
+        """Render the scene with the moving headset"""
+        # Clear image and z-buffer
+        self.image = Image(self.width, self.height, Color(20, 20, 40, 255))
+        self.zBuffer = [-float('inf')] * self.width * self.height
+        
+        # Create a second buffer for split view comparison
+        if self.split_view_mode:
+            self.image_no_blur = Image(self.width, self.height, Color(20, 20, 40, 255))
+            self.zBuffer_no_blur = [-float('inf')] * self.width * self.height
+        
+        # Render floor
+        if hasattr(self, 'floor_object') and self.floor_object:
+            self.render_model(self.floor_object)
+            if self.split_view_mode:
+                self.render_model(self.floor_object, target_image=self.image_no_blur, target_zbuffer=self.zBuffer_no_blur)
+        else:
+            self.render_floor()
+            if self.split_view_mode:
+                self.render_floor(target_image=self.image_no_blur, target_zbuffer=self.zBuffer_no_blur)
+        
+        # Render reference markers
+        for marker_pos, marker_radius in self.reference_markers:
+            marker_color = (200, 200, 200)  # Light gray
+            self.render_marker(marker_pos, marker_radius, color=marker_color)
+            if self.split_view_mode:
+                self.render_marker(marker_pos, marker_radius, color=marker_color,
+                                 target_image=self.image_no_blur, target_zbuffer=self.zBuffer_no_blur)
+        
+        # Render the headset
+        if self.headset:
+            self.render_model(self.headset.model)
+            if self.split_view_mode:
+                self.render_model(self.headset.model, target_image=self.image_no_blur, target_zbuffer=self.zBuffer_no_blur)
+        
+        # Apply motion blur for the main image - using EXTREME BLUR for visibility
+        if self.blur_enabled and self.headset:
+            # Create a custom extreme blur effect for this frame
+            from motion_blur import MotionBlurEffect
+            extreme_blur = MotionBlurEffect(
+                blur_strength=self.motion_blur.blur_strength,  # Use current strength value
+                velocity_scale=3.0,  # Higher velocity scale for pronounced streak
+                max_samples=16       # More samples for smoother blur
+            )
+            
+            blurred_image = extreme_blur.per_object_velocity_blur(
+                self.image,
+                [self.headset],  # Just the one headset
+                self.width,
+                self.height,
+                self.perspective_projection
+            )
+        else:
+            blurred_image = self.image
+        
+        # For split view, we use half of each image
+        if self.split_view_mode:
+            # Create combined image with a dividing line
+            final_image = Image(self.width, self.height, Color(20, 20, 40, 255))
+            
+            # Left half: With motion blur
+            for y in range(self.height):
+                for x in range(self.width // 2):
+                    idx_blur = (blurred_image.height - y - 1) * blurred_image.width * 4 + x * 4 + (blurred_image.height - y - 1) + 1
+                    idx_final = (final_image.height - y - 1) * final_image.width * 4 + x * 4 + (final_image.height - y - 1) + 1
+                    
+                    if idx_blur + 2 < len(blurred_image.buffer) and idx_final + 2 < len(final_image.buffer):
+                        final_image.buffer[idx_final] = blurred_image.buffer[idx_blur]
+                        final_image.buffer[idx_final + 1] = blurred_image.buffer[idx_blur + 1]
+                        final_image.buffer[idx_final + 2] = blurred_image.buffer[idx_blur + 2]
+                        final_image.buffer[idx_final + 3] = blurred_image.buffer[idx_blur + 3]
+            
+            # Right half: No motion blur
+            for y in range(self.height):
+                for x in range(self.width // 2, self.width):
+                    idx_no_blur = (self.image_no_blur.height - y - 1) * self.image_no_blur.width * 4 + x * 4 + (self.image_no_blur.height - y - 1) + 1
+                    idx_final = (final_image.height - y - 1) * final_image.width * 4 + x * 4 + (final_image.height - y - 1) + 1
+                    
+                    if idx_no_blur + 2 < len(self.image_no_blur.buffer) and idx_final + 2 < len(final_image.buffer):
+                        final_image.buffer[idx_final] = self.image_no_blur.buffer[idx_no_blur]
+                        final_image.buffer[idx_final + 1] = self.image_no_blur.buffer[idx_no_blur + 1]
+                        final_image.buffer[idx_final + 2] = self.image_no_blur.buffer[idx_no_blur + 2]
+                        final_image.buffer[idx_final + 3] = self.image_no_blur.buffer[idx_no_blur + 3]
+        else:
+            # Use full blurred image
+            final_image = blurred_image
+        
+        # Convert image to pygame surface
+        for y in range(self.height):
+            for x in range(self.width):
+                idx = (final_image.height - y - 1) * final_image.width * 4 + x * 4 + (final_image.height - y - 1) + 1
+                if idx + 2 < len(final_image.buffer):
+                    r = final_image.buffer[idx]
+                    g = final_image.buffer[idx + 1]
+                    b = final_image.buffer[idx + 2]
+                    self.screen.set_at((x, y), (r, g, b))
+        
+        # Draw a dividing line for split view
+        if self.split_view_mode:
+            pygame.draw.line(self.screen, (255, 255, 255), (self.width // 2, 0), (self.width // 2, self.height), 2)
+        
+        # Draw information overlay
+        self.draw_overlay()
+        
+        # Update display
+        pygame.display.flip()
+    
+    def draw_overlay(self):
+        """Draw information overlay on the screen"""
+        if self.split_view_mode:
+            # Draw labels for split view
+            left_label = self.font.render("WITH MOTION BLUR", True, (255, 255, 255))
+            right_label = self.font.render("NO MOTION BLUR", True, (255, 255, 255))
+            
+            # Position labels in each half
+            left_x = (self.width // 4) - (left_label.get_width() // 2)
+            right_x = (self.width // 4 * 3) - (right_label.get_width() // 2)
+            
+            self.screen.blit(left_label, (left_x, 10))
+            self.screen.blit(right_label, (right_x, 10))
+        else:
+            # Display blur status
+            blur_text = self.font.render(
+                f"Motion Blur: {'ON' if self.blur_enabled else 'OFF'}", 
+                True, (255, 255, 255)
+            )
+            self.screen.blit(blur_text, (10, 10))
+        
+                    # Display headset speed and position
+        if self.headset:
+            speed_text = self.font.render(
+                f"Headset speed: {self.headset.velocity.length():.1f} units/s", 
+                True, (255, 255, 255)
+            )
+            self.screen.blit(speed_text, (10, 40))
+            
+            pos_text = self.font.render(
+                f"Headset X position: {self.headset.position.x:.1f}", 
+                True, (255, 255, 255)
+            )
+            self.screen.blit(pos_text, (10, 65))
+        
+        # Display frame count
+        frame_text = self.font.render(f"Frame: {self.frame_count}", True, (255, 255, 255))
+        self.screen.blit(frame_text, (10, 90))
+        
+        # Display controls
+        controls_text = self.font.render(
+            "B: Toggle blur | S: Toggle split view | R: Reset", 
+            True, (200, 200, 200)
+        )
+        self.screen.blit(controls_text, (10, self.height - 30))
+    
+    def handle_events(self):
+        """Handle user input events"""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return False
+                
+                elif event.key == pygame.K_b:
+                    # Toggle motion blur
+                    self.blur_enabled = not self.blur_enabled
+                    print(f"Motion blur: {'ON' if self.blur_enabled else 'OFF'}")
+                
+                elif event.key == pygame.K_s:
+                    # Toggle split view mode
+                    self.split_view_mode = not self.split_view_mode
+                    print(f"Split view mode: {'ON' if self.split_view_mode else 'OFF'}")
+                
+                elif event.key == pygame.K_r:
+                    # Reset demo
+                    self.setup_scene()
+                    self.frame_count = 0
+                    print("Demo reset")
+                
+                elif event.key == pygame.K_UP:
+                    # Increase blur strength
+                    self.motion_blur.blur_strength = min(5.0, self.motion_blur.blur_strength + 0.5)
+                    print(f"Blur strength increased to {self.motion_blur.blur_strength}")
+                
+                elif event.key == pygame.K_DOWN:
+                    # Decrease blur strength
+                    self.motion_blur.blur_strength = max(0.5, self.motion_blur.blur_strength - 0.5)
+                    print(f"Blur strength decreased to {self.motion_blur.blur_strength}")
+                
+                elif event.key == pygame.K_RIGHT:
+                    # Increase headset speed
+                    if self.headset:
+                        self.headset.velocity.x *= 1.25
+                        print(f"Headset speed increased to {abs(self.headset.velocity.x):.1f}")
+                
+                elif event.key == pygame.K_LEFT:
+                    # Decrease headset speed
+                    if self.headset:
+                        self.headset.velocity.x /= 1.25
+                        print(f"Headset speed decreased to {abs(self.headset.velocity.x):.1f}")
+        
+        return True
+    
+    def update_headset(self, dt):
+        """Update the headset position based on velocity"""
+        if not self.headset:
+            return
+            
+        # Update position based on velocity
+        self.headset.position.x += self.headset.velocity.x * dt
+        self.headset.position.y += self.headset.velocity.y * dt
+        self.headset.position.z += self.headset.velocity.z * dt
+        
+        # Add rotation for visual interest - make it face the direction of travel
+        # For horizontal movement (X-axis), rotate around Y axis
+        if self.headset.velocity.x > 0:
+            # Moving right, face right (90 degrees around Y)
+            self.headset.model.model.setRotation(0, math.pi/2, 0)
+        elif self.headset.velocity.x < 0:
+            # Moving left, face left (-90 degrees around Y)
+            self.headset.model.model.setRotation(0, -math.pi/2, 0)
+            
+        # Additionally, add a slight bobbing motion
+        bobbing_amount = 0.2
+        self.headset.position.y = 5 + bobbing_amount * math.sin(self.frame_count * 0.1)
+        
+        # Update model position
+        self.headset.model.model.setPosition(
+            self.headset.position.x, 
+            self.headset.position.y, 
+            self.headset.position.z
+        )
+        
+        # If headset moves too far horizontally, reset to the other side
+        if self.headset.position.x > 40:
+            self.headset.position.x = -40
+            self.headset.model.model.setPosition(
+                self.headset.position.x, 
+                self.headset.position.y, 
+                self.headset.position.z
+            )
+        elif self.headset.position.x < -40:
+            self.headset.position.x = 40
+            self.headset.model.model.setPosition(
+                self.headset.position.x, 
+                self.headset.position.y, 
+                self.headset.position.z
+            )
+    
+    def run_demo(self, frames=300):
+        """
+        Run the motion blur demo for the specified number of frames.
+        
+        Args:
+            frames: Total number of frames to render
+        """
+        print(f"Starting Motion Blur Horizontal Headset Demo - {frames} frames")
+        print("Controls:")
+        print("  B: Toggle motion blur on/off")
+        print("  S: Toggle split view (left: with blur, right: without blur)")
+        print("  UP/DOWN: Increase/decrease blur strength")
+        print("  LEFT/RIGHT: Decrease/increase headset speed")
+        print("  R: Reset demo")
+        print("  ESC: Quit")
+        
+        # Start video recording
+        self.video_recorder.start_recording()
+        
+        # Main demo loop
+        running = True
+        clock = pygame.time.Clock()
+        
+        # Set fixed time step for stable physics
+        fixed_time_step = 1.0 / 60.0  # 60 fps physics
+        
+        while running and self.frame_count < frames:
+            # Limit to 60 FPS for consistent physics
+            dt = fixed_time_step
+            clock.tick(60)
+            
+            # Handle events
+            running = self.handle_events()
+            if not running:
+                break
+            
+            # Update headset
+            self.update_headset(dt)
+            
+            # Render scene
+            self.render_scene()
+            
+            # Capture frame for video
+            self.video_recorder.capture_frame(self.screen)
+            
+            # Save key frames (every 30th frame)
+            if self.frame_count % 30 == 0:
+                frame_path = os.path.join(self.output_dir, f"frame_{self.frame_count:04d}.png")
+                pygame.image.save(self.screen, frame_path)
+            
+            # Increment frame counter
+            self.frame_count += 1
+        
+        # Stop recording and save video
+        video_path = self.video_recorder.save_video(os.path.join(self.output_dir, "horizontal_headset_demo.mp4"))
+        print(f"Demo completed. Video saved to: {video_path}")
+        
+        # Generate high quality version with ffmpeg if available
+        try:
+            ffmpeg_path = self.video_recorder.generate_ffmpeg_video(
+                output_path=os.path.join(self.output_dir, "horizontal_headset_demo_hq.mp4"),
+                quality="high"
+            )
+            if ffmpeg_path:
+                print(f"High quality video saved to: {ffmpeg_path}")
+        except Exception as e:
+            print(f"Failed to generate high quality video: {e}")
+        
+        # Clean up
+        pygame.quit()
+
 
 if __name__ == "__main__":
-    demo = MotionBlurHeadsetDemo(width=1280, height=720, output_dir="enhanced_motion_blur_demo")
-    demo.run_demo(frames=360, toggle_interval=90)
-    # pygame.quit() is already called in run_demo
+    # Create and run the motion blur demo
+    demo = MotionBlurHorizontalHeadsetDemo(width=1280, height=720)
+    demo.run_demo(frames=300)
+
+# if __name__ == "__main__":
+#     demo = MotionBlurHeadsetDemo(width=1280, height=720, output_dir="enhanced_motion_blur_demo")
+#     demo.run_demo(frames=360, toggle_interval=90)
+#     # pygame.quit() is already called in run_demo
 
 # if __name__ == "__main__":
 #     demo = MotionBlurHeadsetDemo(width=1280, height=720, output_dir="enhanced_motion_blur_demo")
