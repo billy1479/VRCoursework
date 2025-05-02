@@ -41,7 +41,7 @@ class HeadsetSimulation:
         self.video_recorder = VideoRecorder(width, height, fps=30)
         self.is_recording = False
 
-        self.depth_of_field = DepthOfFieldEffect(focal_distance=5.0, focal_range=1.5, blur_strength=3.0)
+        self.depth_of_field = DepthOfFieldEffect(focal_distance=15.0, focal_range=1.5, blur_strength=2.0)
         self.dof_enabled = True
         
         # Load IMU data
