@@ -41,7 +41,7 @@ class HeadsetSimulation:
         self.video_recorder = VideoRecorder(width, height, fps=30)
         self.is_recording = False
 
-        self.depth_of_field = DepthOfFieldEffect(focal_distance=15.0, focal_range=1.5, blur_strength=2.0)
+        self.depth_of_field = DepthOfFieldEffect(focal_distance=-25, focal_range=10, blur_strength=2.0)
         self.dof_enabled = True
         
         # Load IMU data
@@ -55,7 +55,7 @@ class HeadsetSimulation:
         # Physics settings - Reduced friction significantly for longer movement
         self.friction_coefficient = 0.97
         self.accumulator = 0
-
+ 
         # Target frames for 27 seconds at 30fps
         self.target_frames = 810
         
