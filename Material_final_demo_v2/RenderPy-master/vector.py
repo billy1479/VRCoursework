@@ -1,6 +1,5 @@
 import math
 import numbers
-
 class Vector(object):
     """ A vector with useful vector / matrix operations.
     """

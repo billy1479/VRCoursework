@@ -85,7 +85,6 @@ class ColoredModel:
         """
         return getattr(self.model, name)
 
-
 def setup_colored_scene():
     """
     Create a scene with multiple colored headsets.

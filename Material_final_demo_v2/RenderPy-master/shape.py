@@ -1,16 +1,3 @@
-""" Module for drawing geometric primitives, using only the Python standard library.
-	Example Line:
-		p0 = Point(10, 10, color = Color(255, 0, 0, 255))
-		p1 = Point(20, 20, color = Color(0, 0, 255, 255))
-		Line(p0, p1).draw(image)
-
-	Example triangle:
-		p0 = Point(10, 10, 0, Color(255, 0, 0, 255))
-		p1 = Point(290, 50, 0, Color(0, 0, 255, 255))
-		p2 = Point(200, 280, 0, Color(0, 255, 0, 255))
-		Triangle(p0, p1, p2).draw(image)
-"""
-
 from image import Image, Color
 
 class Point(object):

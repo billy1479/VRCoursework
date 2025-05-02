@@ -72,16 +72,24 @@ class CollisionObject:
         # Relative velocity
         relative_velocity = other.velocity - self.velocity
         
-        # Use coefficient of restitution from this object
-        cor = self.elasticity
+        # Calculate the velocity along the normal
+        velocity_along_normal = relative_velocity * normal
         
-        # Calculate impulse
-        j = -(1 + cor) * (relative_velocity * normal)
-        j = j / 2  # Assuming equal masses for simplicity
+        # If objects are separating, no need to resolve
+        if velocity_along_normal > 0:
+            return
+        
+        # Use coefficient of restitution (elasticity)
+        cor = min(self.elasticity, other.elasticity)
+        
+        # Calculate impulse scalar
+        impulse = -(1 + cor) * velocity_along_normal
+        impulse /= 2  # Assuming equal masses for simplicity
         
         # Apply impulse to velocities
-        self.velocity = self.velocity + (normal * j)
-        other.velocity = other.velocity - (normal * j)
+        impulse_vector = normal * impulse
+        self.velocity = self.velocity - impulse_vector
+        other.velocity = other.velocity + impulse_vector
         
         # Add to recent collisions
         self.recent_collisions.add(other)
@@ -90,31 +98,6 @@ class CollisionObject:
     def clear_collision_history(self):
         """Clear the set of recent collisions"""
         self.recent_collisions.clear()
-
-
-class ColoredCollisionObject(CollisionObject):
-    """
-    Extends CollisionObject with color properties.
-    """
-    def __init__(self, model, position, velocity, radius, diffuse_color=None, elasticity=0.8):
-        """
-        Initialize a colored collision object.
-        
-        Args:
-            model: The 3D model for rendering
-            position: Vector representing position in 3D space
-            velocity: Vector representing velocity
-            radius: Radius of bounding sphere
-            diffuse_color: RGB tuple for the object's main color
-            elasticity: Coefficient of restitution (0.0 = inelastic, 1.0 = perfectly elastic)
-        """
-        # Wrap the model with ColoredModel if it's not already
-        if not hasattr(model, 'diffuse_color'):
-            model = ColoredModel(model, diffuse_color)
-            
-        # Initialize parent class
-        super().__init__(model, position, velocity, radius, elasticity)
-
 
 def setup_collision_scene(models_path='./data/headset.obj', elasticity=0.8):
     """
@@ -210,7 +193,6 @@ def setup_collision_scene(models_path='./data/headset.obj', elasticity=0.8):
     objects.append(ColoredCollisionObject(model, pos, vel, radius=1.0, diffuse_color=(255, 255, 255), elasticity=elasticity))
 
     return objects
-
 
 def update_physics(objects, dt, boundaries=None, friction_coefficient=0.95):
     """

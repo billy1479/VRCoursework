@@ -6,7 +6,7 @@ import math
 import numpy as np
 from image import Image, Color
 from vector import Vector
-from model import Model, SensorDataParser, Quaternion
+from model import Model, SensorDataParser
 from dead_reckoning_filter import DeadReckoningFilter
 from collision import CollisionObject
 from shape import Triangle, Point
@@ -35,7 +35,7 @@ class HeadsetSimulation:
         
         # Motion blur
         self.motion_blur = MotionBlurEffect(blur_strength=0.8)
-        self.blur_enabled = True
+        self.blur_enabled = False
         
         # Video recorder
         self.video_recorder = VideoRecorder(width, height, fps=30)
@@ -53,7 +53,7 @@ class HeadsetSimulation:
         self.setup_scene()
         
         # Physics settings - Reduced friction significantly for longer movement
-        self.friction_coefficient = 0.95  # Changed from 0.98 to 0.995 (much less friction)
+        self.friction_coefficient = 0.97
         self.accumulator = 0
 
         # Target frames for 27 seconds at 30fps
@@ -97,30 +97,6 @@ class HeadsetSimulation:
                 2  # Line width
             )
 
-    def create_synthetic_imu_data(self):
-        """Create synthetic IMU data if no real data available"""
-        print("Creating synthetic IMU data")
-        from model import SensorData
-        
-        self.sensor_data = []
-        for i in range(300):
-            time_val = i / 30.0
-            gyro_x = math.sin(time_val * 0.8) * 0.3
-            gyro_y = math.cos(time_val * 0.5) * 0.2
-            gyro_z = math.sin(time_val * 0.3) * 0.15
-            
-            self.sensor_data.append(
-                SensorData(
-                    time=time_val,
-                    gyroscope=(gyro_x, gyro_y, gyro_z),
-                    accelerometer=(0.1, 9.8, 0.2),
-                    magnetometer=(0.5, 0.2, 0.8)
-                )
-            )
-        
-        self.dr_filter = DeadReckoningFilter(alpha=0.98)
-        self.current_data_index = 0
-
     def setup_scene(self):
         """Set up the scene with main headset, floor headsets, and floor object"""
         # Main floating headset
@@ -154,7 +130,13 @@ class HeadsetSimulation:
             floor_model.updateTransform()
             
             # Create colored version of the floor
-            self.floor_object = ColoredModel(floor_model, diffuse_color=(150, 150, 150))
+            self.floor_object = ColoredModel(
+                floor_model, 
+                diffuse_color=(255, 255, 255),  # Pure white 
+                ambient_color=(200, 200, 200),  # Light gray for ambient light
+                specular_color=(255, 255, 255),  # White highlights
+                shininess=5  # Low shininess for a matte floor
+            )
             
             print("Floor model loaded successfully")
         except Exception as e:
@@ -182,7 +164,7 @@ class HeadsetSimulation:
         
         # Circle of headsets moving inward - Higher velocities
         num_circle = 8
-        circle_radius = 20
+        circle_radius = 25  # Increased radius for better collisions
         for i in range(num_circle):
             angle = (i / num_circle) * 2 * math.pi
             pos = Vector(
@@ -191,8 +173,8 @@ class HeadsetSimulation:
                 circle_radius * math.sin(angle) - 10
             )
             
-            # Set higher velocity for longer movement
-            speed = 3 + (i % 3)  # Increased speed
+            # Set higher velocity for more dramatic collisions
+            speed = 20 + (i % 3)  # Significantly increased speed from 3+
             vel = Vector(
                 -math.cos(angle) * speed,
                 0,
@@ -203,13 +185,12 @@ class HeadsetSimulation:
             model.normalizeGeometry()
             model.setPosition(pos.x, pos.y, pos.z)
             
-            # Create a colored model for this headset
             colored_model = ColoredModel(model, diffuse_color=colors[i % len(colors)])
             
-            # Create collision object
-            headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+            # Create collision object with larger radius and higher elasticity
+            headsets.append(CollisionObject(colored_model, pos, vel, radius=2.0, elasticity=0.95))
         
-        # Triangle formation of headsets with small initial velocities
+        # Triangle formation - now with initial velocities for better collisions
         triangle_size = 3
         start_z = -5
         color_index = 0
@@ -221,11 +202,11 @@ class HeadsetSimulation:
                     start_z + row * 2.5
                 )
                 
-                # Add small random velocities so they're not completely stationary
+                # Add actual velocities instead of tiny random ones
                 vel = Vector(
-                    (random.random() - 0.5) * 0.5,  # Small random x velocity
+                    (random.random() - 0.5) * 3.0,  # Stronger initial velocity
                     0,
-                    (random.random() - 0.5) * 0.5   # Small random z velocity
+                    (random.random() - 0.5) * 3.0   # Stronger initial velocity
                 )
                 
                 model = Model('./data/headset.obj')
@@ -235,42 +216,39 @@ class HeadsetSimulation:
                 colored_model = ColoredModel(model, diffuse_color=colors[color_index % len(colors)])
                 color_index += 1
                 
-                headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+                headsets.append(CollisionObject(colored_model, pos, vel, radius=2.0, elasticity=0.95))
         
-        # Add "cue ball" white headsets from different angles
-        # Main "cue ball" from behind
+        # "Cue ball" headsets - increased velocities
         pos = Vector(0, 1, -25)
-        vel = Vector(0, 0, 5.5)  # Increased speed
+        vel = Vector(6, 0, 6)  # Significantly increased speed and diagonal direction
         
         model = Model('./data/headset.obj')
         model.normalizeGeometry()
         model.setPosition(pos.x, pos.y, pos.z)
         
         colored_model = ColoredModel(model, diffuse_color=(255, 255, 255))
-        headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        headsets.append(CollisionObject(colored_model, pos, vel, radius=2.0, elasticity=0.95))
         
-        # Additional "cue balls" from sides to create more interesting collisions
-        # From left
+        # Side headsets with increased velocities
         pos = Vector(-18, 1, -15)
-        vel = Vector(3, 0, 0)  # Moving right
+        vel = Vector(7, 0, 2)  # Faster, diagonal motion
         
         model = Model('./data/headset.obj')
         model.normalizeGeometry()
         model.setPosition(pos.x, pos.y, pos.z)
         
-        colored_model = ColoredModel(model, diffuse_color=(220, 220, 255))  # Slightly blue-tinted white
-        headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        colored_model = ColoredModel(model, diffuse_color=(220, 220, 255))
+        headsets.append(CollisionObject(colored_model, pos, vel, radius=2.0, elasticity=0.95))
         
-        # From right (will enter scene later)
         pos = Vector(18, 1, -10)
-        vel = Vector(-2.5, 0, -1)  # Moving left and slightly back
+        vel = Vector(-7, 0, -3)  # Faster, diagonal motion
         
         model = Model('./data/headset.obj')
         model.normalizeGeometry()
         model.setPosition(pos.x, pos.y, pos.z)
         
-        colored_model = ColoredModel(model, diffuse_color=(255, 220, 220))  # Slightly red-tinted white
-        headsets.append(CollisionObject(colored_model, pos, vel, radius=1.0))
+        colored_model = ColoredModel(model, diffuse_color=(255, 220, 220))
+        headsets.append(CollisionObject(colored_model, pos, vel, radius=2.0, elasticity=0.95))
         
         return headsets
 
@@ -326,14 +304,17 @@ class HeadsetSimulation:
         fixed_dt = 1/60.0
         self.accumulator += dt
         
-        # Define boundary walls
+        # Define boundary walls with more elasticity
         boundary = {
             'min_x': -30.0,
             'max_x': 30.0,
             'min_z': -40.0,
             'max_z': 0.0,
-            'bounce_factor': 0.9  # Increased from 0.8 to 0.9 (more elastic bounces)
+            'bounce_factor': 0.98  # Increased from 0.9 to 0.98 (almost no energy loss)
         }
+        
+        # Reduce friction drastically
+        self.friction_coefficient = 0.995  # Almost no friction (was 0.8)
         
         while self.accumulator >= fixed_dt:
             # Clear collision records
@@ -345,6 +326,13 @@ class HeadsetSimulation:
                 for j in range(i + 1, len(self.floor_headsets)):
                     if self.floor_headsets[i].check_collision(self.floor_headsets[j]):
                         self.floor_headsets[i].resolve_collision(self.floor_headsets[j])
+                        
+                        # Add more energy on collision to maintain excitement
+                        energy_boost = 0.05
+                        self.floor_headsets[i].velocity.x *= (1.0 + energy_boost)
+                        self.floor_headsets[i].velocity.z *= (1.0 + energy_boost)
+                        self.floor_headsets[j].velocity.x *= (1.0 + energy_boost)
+                        self.floor_headsets[j].velocity.z *= (1.0 + energy_boost)
             
             # Apply floor constraints and friction
             for headset in self.floor_headsets:
@@ -354,7 +342,7 @@ class HeadsetSimulation:
                 # Apply friction when on floor, but only if moving fast enough
                 if headset.position.y - headset.radius <= 0.01:
                     headset.position.y = headset.radius
-        
+            
                     # Apply friction to horizontal velocity components
                     horizontal_speed_squared = (
                         headset.velocity.x**2 + 
@@ -363,66 +351,62 @@ class HeadsetSimulation:
                     
                     # Only apply friction if moving horizontally
                     if horizontal_speed_squared > 0.001:
-                        # Apply friction by reducing horizontal velocity
+                        # Apply very minimal friction
                         headset.velocity.x *= self.friction_coefficient
                         headset.velocity.z *= self.friction_coefficient
                         
-                        # Recalculate horizontal speed after applying friction
-                        new_horizontal_speed_squared = (
-                            headset.velocity.x**2 + 
-                            headset.velocity.z**2
-                        )
-                        
-                        # Stop completely if very slow after friction is applied
-                        if new_horizontal_speed_squared < 0.025:
-                            headset.velocity.x = 0
-                            headset.velocity.z = 0
+                        # Never completely stop objects - always maintain some movement
+                        if horizontal_speed_squared * self.friction_coefficient**2 < 0.1:
+                            # Add small random impulse to keep objects in motion
+                            headset.velocity.x += (random.random() * 2 - 1) * 0.2
+                            headset.velocity.z += (random.random() * 2 - 1) * 0.2
                 
-                # Apply boundary constraints
+                # Apply boundary constraints with better restitution
                 if headset.position.x - headset.radius < boundary['min_x']:
                     headset.position.x = boundary['min_x'] + headset.radius
                     headset.velocity.x = -headset.velocity.x * boundary['bounce_factor']
                     
-                    # Add small random variation to z velocity on x boundary collision
-                    headset.velocity.z += (random.random() - 0.5) * 0.5
+                    # Add energy on boundary collision
+                    headset.velocity.z += (random.random() * 2 - 1) * 0.8
                     
                 elif headset.position.x + headset.radius > boundary['max_x']:
                     headset.position.x = boundary['max_x'] - headset.radius
                     headset.velocity.x = -headset.velocity.x * boundary['bounce_factor']
                     
-                    # Add small random variation to z velocity on x boundary collision
-                    headset.velocity.z += (random.random() - 0.5) * 0.5
+                    # Add energy on boundary collision
+                    headset.velocity.z += (random.random() * 2 - 1) * 0.8
                 
                 if headset.position.z - headset.radius < boundary['min_z']:
                     headset.position.z = boundary['min_z'] + headset.radius
                     headset.velocity.z = -headset.velocity.z * boundary['bounce_factor']
                     
-                    # Add small random variation to x velocity on z boundary collision
-                    headset.velocity.x += (random.random() - 0.5) * 0.5
+                    # Add energy on boundary collision
+                    headset.velocity.x += (random.random() * 2 - 1) * 0.8
                     
                 elif headset.position.z + headset.radius > boundary['max_z']:
                     headset.position.z = boundary['max_z'] - headset.radius
                     headset.velocity.z = -headset.velocity.z * boundary['bounce_factor']
                     
-                    # Add small random variation to x velocity on z boundary collision
-                    headset.velocity.x += (random.random() - 0.5) * 0.5
+                    # Add energy on boundary collision
+                    headset.velocity.x += (random.random() * 2 - 1) * 0.8
                 
                 # Update model position
                 headset.model.model.setPosition(headset.position.x, headset.position.y, headset.position.z)
             
-            # Every 60 frames (about 1 second), add small random impulses to keep things moving
-            if self.frame_count % 60 == 0 and self.frame_count < self.target_frames * 0.7:
+            # Every 30 frames (about 0.5 seconds), add random impulses to maintain movement
+            if self.frame_count % 30 == 0 and self.frame_count < self.target_frames * 0.9:
                 for headset in self.floor_headsets:
-                    # Only add impulses to slow headsets
+                    # Add random impulses to all headsets to keep motion interesting
                     speed_sq = headset.velocity.x**2 + headset.velocity.z**2
-                    if speed_sq < 2.0:
-                        # Add small random impulse
-                        headset.velocity.x += (random.random() - 0.5) * 0.8
-                        headset.velocity.z += (random.random() - 0.5) * 0.8
+                    
+                    if speed_sq < 8.0:  # Only boost slower objects
+                        # Add stronger random impulse
+                        headset.velocity.x += (random.random() * 2 - 1) * 1.2
+                        headset.velocity.z += (random.random() * 2 - 1) * 1.2
             
             self.accumulator -= fixed_dt
 
-    def render_model(self, model_obj):
+    def render_model(self, model_obj, floor=False):
         """Render a 3D model with lighting"""
         # Get the actual model (handle both direct models and ColoredModel objects)
         model = getattr(model_obj, 'model', model_obj)
@@ -478,15 +462,16 @@ class HeadsetSimulation:
             n2 = vertex_normals[face[2]]
             
             # Backface culling
-            avg_normal = (n0 + n1 + n2).normalize()
-            view_dir = Vector(
-                self.camera_pos.x - (v0.x + v1.x + v2.x) / 3,
-                self.camera_pos.y - (v0.y + v1.y + v2.y) / 3,
-                self.camera_pos.z - (v0.z + v1.z + v2.z) / 3
-            ).normalize()
-            
-            if avg_normal * view_dir <= 0:
-                continue
+            if not floor:
+                avg_normal = (n0 + n1 + n2).normalize()
+                view_dir = Vector(
+                    self.camera_pos.x - (v0.x + v1.x + v2.x) / 3,
+                    self.camera_pos.y - (v0.y + v1.y + v2.y) / 3,
+                    self.camera_pos.z - (v0.z + v1.z + v2.z) / 3
+                ).normalize()
+                
+                if avg_normal * view_dir <= 0:
+                    continue
             
             # Create triangle points
             triangle_points = []
@@ -571,12 +556,95 @@ class HeadsetSimulation:
                             self.zBuffer[buffer_index] = z_value
                             self.image.setPixel(x, y, color)
 
+    # def render_floor(self):
+    #     """Render a simple floor grid"""
+    #     size = 30
+    #     height = 0
+        
+    #     # Floor corners
+    #     corners = [
+    #         Vector(-size, height, -size - 10),
+    #         Vector(size, height, -size - 10),
+    #         Vector(size, height, size - 10),
+    #         Vector(-size, height, size - 10)
+    #     ]
+        
+    #     # Create floor points
+    #     p0 = Point(corners[0].x, corners[0].y, corners[0].z)
+    #     p1 = Point(corners[1].x, corners[1].y, corners[1].z)
+    #     p2 = Point(corners[2].x, corners[2].y, corners[2].z)
+    #     p3 = Point(corners[3].x, corners[3].y, corners[3].z)
+        
+    #     # Set normal and color
+    #     normal = Vector(0, 1, 0)
+    #     for p in [p0, p1, p2, p3]:
+    #         p.normal = normal
+    #         p.color = Color(100, 100, 100, 255)
+        
+    #     # Render floor triangles
+    #     self.draw_triangle(p0, p1, p2)
+    #     self.draw_triangle(p0, p2, p3)
+
     def render_floor(self):
-        """Render a simple floor grid"""
+        """Render a white floor with grid lines"""
         size = 30
         height = 0
         
-        # Floor corners
+        # Create a simpler approach using pygame
+        # Map 3D corners to screen space
+        floor_corners = [
+            Vector(-size, height, -size - 10),
+            Vector(size, height, -size - 10),
+            Vector(size, height, size - 10),
+            Vector(-size, height, size - 10)
+        ]
+        
+        # Project to screen space
+        screen_corners = []
+        for corner in floor_corners:
+            screen_x, screen_y = self.perspective_projection(corner.x, corner.y, corner.z)
+            if screen_x >= 0 and screen_y >= 0:
+                screen_corners.append((screen_x, screen_y))
+        
+        # Draw floor as a filled polygon if we have all corners
+        if len(screen_corners) == 4:
+            # Draw filled white floor
+            pygame.draw.polygon(
+                self.screen,
+                (230, 230, 230),  # Light gray/white
+                screen_corners
+            )
+            
+            # Draw grid lines on top
+            grid_size = 5
+            for i in range(-size, size + 1, grid_size):
+                # X grid lines
+                start_x, start_y = self.perspective_projection(i, height, -size - 10)
+                end_x, end_y = self.perspective_projection(i, height, size - 10)
+                if start_x >= 0 and start_y >= 0 and end_x >= 0 and end_y >= 0:
+                    pygame.draw.line(
+                        self.screen,
+                        (180, 180, 180),  # Grid line color
+                        (start_x, start_y),
+                        (end_x, end_y),
+                        1  # Line width
+                    )
+                
+                # Z grid lines
+                for j in range(-size - 10, size - 9, grid_size):
+                    start_x, start_y = self.perspective_projection(-size, height, j)
+                    end_x, end_y = self.perspective_projection(size, height, j)
+                    if start_x >= 0 and start_y >= 0 and end_x >= 0 and end_y >= 0:
+                        pygame.draw.line(
+                            self.screen,
+                            (180, 180, 180),  # Grid line color
+                            (start_x, start_y),
+                            (end_x, end_y),
+                            1  # Line width
+                        )
+        
+        # Also add the floor to the z-buffer and main image for proper rendering
+        # This ensures objects disappearing behind the floor are handled correctly
         corners = [
             Vector(-size, height, -size - 10),
             Vector(size, height, -size - 10),
@@ -584,19 +652,19 @@ class HeadsetSimulation:
             Vector(-size, height, size - 10)
         ]
         
-        # Create floor points
+        # Create floor points with proper z-values for the z-buffer
         p0 = Point(corners[0].x, corners[0].y, corners[0].z)
         p1 = Point(corners[1].x, corners[1].y, corners[1].z)
         p2 = Point(corners[2].x, corners[2].y, corners[2].z)
         p3 = Point(corners[3].x, corners[3].y, corners[3].z)
         
-        # Set normal and color
+        # Set normal and color - white with proper opacity
         normal = Vector(0, 1, 0)
         for p in [p0, p1, p2, p3]:
             p.normal = normal
-            p.color = Color(100, 100, 100, 255)
+            p.color = Color(255, 255, 255, 255)  # White floor
         
-        # Render floor triangles
+        # Render floor triangles to the z-buffer and image
         self.draw_triangle(p0, p1, p2)
         self.draw_triangle(p0, p2, p3)
 
@@ -608,7 +676,7 @@ class HeadsetSimulation:
         
         # Render floor object first (so it's behind everything else)
         if hasattr(self, 'floor_object') and self.floor_object:
-            self.render_model(self.floor_object)
+            self.render_model(self.floor_object, True)
         else:
             # Render simple floor if floor model failed to load
             self.render_floor()

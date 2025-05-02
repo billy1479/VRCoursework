@@ -2,7 +2,7 @@
 import math
 import numpy as np
 from vector import Vector
-from model import Quaternion
+from quaternion import Quaternion
 
 class DeadReckoningFilter:
     def __init__(self, alpha=0.98):

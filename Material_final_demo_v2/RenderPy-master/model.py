@@ -173,8 +173,6 @@ class SensorDataParser:
         }
         return stats
     
-    
-
 class Matrix4:
     """
     4x4 transformation matrix for 3D graphics operations.
