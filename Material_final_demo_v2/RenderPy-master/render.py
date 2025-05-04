@@ -40,7 +40,7 @@ class HeadsetSimulation:
         
         # Video recorder
         self.video_recorder = VideoRecorder(width, height, fps=30)
-        self.is_recording = False
+        self.is_recording = True
 
         self.depth_of_field = DepthOfFieldEffect(focal_distance=-25, focal_range=10, blur_strength=2.0)
         self.dof_enabled = True
@@ -1456,7 +1456,7 @@ class HeadsetSimulation:
                     print(f"Using ~{self.samples_per_frame:.2f} IMU samples per frame for 27-second video")
                     
                     # Create and calibrate filter
-                    self.dr_filter = DeadReckoningFilter(alpha=0.98)
+                    self.dr_filter = DeadReckoningFilter(alpha=0.5) # testing to see the effect
                     self.dr_filter.calibrate(self.sensor_data[:min(100, len(self.sensor_data))])
                     self.current_data_index = 0
                     return
