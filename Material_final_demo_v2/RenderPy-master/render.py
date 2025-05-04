@@ -32,6 +32,7 @@ class HeadsetSimulation:
         self.camera_pos = Vector(0, 20, -50)
         self.camera_target = Vector(0, 5, -20)
         self.light_dir = Vector(0.5, -1, -0.5).normalize()
+
         
         # Motion blur
         self.motion_blur = MotionBlurEffect(blur_strength=0.8)
@@ -117,38 +118,141 @@ class HeadsetSimulation:
             "position": position
         }
         
-        # Load the floor object
+        # Create the floor object
         try:
-            floor_model = Model('./data/floor.obj')
-            floor_model.normalizeGeometry()
+            self.floor_object = self.create_floor_model()
+            print("Created floor model successfully")
             
-            # Position the floor under the headsets
-            floor_model.setPosition(0, 0, -20)
+            # Debug output to check floor properties
+            floor_model = self.floor_object.model
+            print(f"Floor position: {floor_model.trans}")
+            print(f"Floor scale: {floor_model.scale}")
             
-            # Scale the floor to cover the entire movement area
-            floor_model.scale = [60.0, 1.0, 40.0]
-            floor_model.updateTransform()
+            # Debug - test perspective projection of floor corners
+            vertices = []
+            for i in range(len(floor_model.vertices)):
+                vertex = floor_model.getTransformedVertex(i)
+                vertices.append(vertex)
+                
+            for i, v in enumerate(vertices):
+                screen_x, screen_y = self.perspective_projection(v.x, v.y, v.z)
+                print(f"Floor vertex {i}: ({v.x}, {v.y}, {v.z}) -> Screen: ({screen_x}, {screen_y})")
             
-            # Create colored version of the floor
-            self.floor_object = ColoredModel(
-                floor_model, 
-                diffuse_color=(255, 255, 255),  # Pure white 
-                ambient_color=(200, 200, 200),  # Light gray for ambient light
-                specular_color=(255, 255, 255),  # White highlights
-                shininess=5  # Low shininess for a matte floor
-            )
-            
-            print("Floor model loaded successfully")
         except Exception as e:
-            print(f"Error loading floor model: {e}")
+            print(f"Error creating floor model: {e}")
+            import traceback
+            traceback.print_exc()
             self.floor_object = None
         
-        # Create floor headsets
-        self.floor_headsets = self.create_floor_headsets()
+        # For testing, let's temporarily skip creating floor headsets
+        self.floor_headsets = self.create_floor_headsets() # enable this when the simulation is ready
 
+    def create_floor_model(self):
+        """Create a floor model programmatically to ensure it matches the scene boundaries"""
+        floor_model = Model('./data/floor.obj')  # Try to load the floor model
+
+        # Define scene boundaries (match render_boundaries)
+        scene_boundary = {
+            'min_x': -30.0,
+            'max_x': 30.0,
+            'min_z': -40.0,
+            'max_z': 0.0,
+            'min_y': -1.0,  # Assuming floor height
+            'max_y': 1.0    # Small margin above the floor
+        }
+
+        # Calculate floor dimensions based on scene boundaries
+        floor_width = scene_boundary['max_x'] - scene_boundary['min_x']
+        floor_depth = scene_boundary['max_z'] - scene_boundary['min_z']
+        floor_height = scene_boundary['min_y']
+
+        # Position and scale the floor model to match the scene boundaries
+        floor_model.setPosition(
+            (scene_boundary['min_x'] + scene_boundary['max_x']) / 2,  # Center X
+            floor_height,  # Y position
+            (scene_boundary['min_z'] + scene_boundary['max_z']) / 2   # Center Z
+        )
+        floor_model.scale = [floor_width / 10, 1, floor_depth / 10]  # Scale to match dimensions
+        floor_model.updateTransform()
+
+        # Create a colored version of the floor
+        floor_object = ColoredModel(
+            floor_model,
+            diffuse_color=(125, 125, 125)  # Light gray
+        )
+
+        return floor_object
+    
     def create_floor_headsets(self):
-        """Create sliding headsets that will collide on the floor with higher initial velocities"""
+        """Create sliding headsets that will collide on the floor using actual floor vertices"""
         headsets = []
+        
+        # Get actual floor vertices from the transformed floor model
+        if not hasattr(self, 'floor_object') or not self.floor_object:
+            print("ERROR: Floor object not available for headset placement")
+            return []
+        
+        floor_model = self.floor_object.model
+        floor_vertices = []
+        
+        # Get all transformed vertices from the floor model
+        for i in range(len(floor_model.vertices)):
+            vertex = floor_model.getTransformedVertex(i)
+            floor_vertices.append(vertex)
+        
+        # Find the min and max boundaries from actual vertices
+        min_x = float('inf')
+        max_x = float('-inf')
+        min_z = float('inf')
+        max_z = float('-inf')
+        floor_y = 0
+        
+        for vertex in floor_vertices:
+            min_x = min(min_x, vertex.x)
+            max_x = max(max_x, vertex.x)
+            min_z = min(min_z, vertex.z)
+            max_z = max(max_z, vertex.z)
+            floor_y = vertex.y  # All floor vertices should have same Y
+        
+        # Debug output
+        print(f"Actual floor boundaries from vertices: X={min_x} to {max_x}, Z={min_z} to {max_z}, Y={floor_y}")
+        
+        # Define boundary using actual vertex positions
+        boundary = {
+            'min_x': min_x,
+            'max_x': max_x,
+            'min_z': min_z,
+            'max_z': max_z,
+            'floor_y': floor_y
+        }
+        
+        # Headset properties
+        headset_radius = 2.0
+        safety_margin = 2.0
+        
+        # Define safe area with margin for headset radius
+        safe_area = {
+            'min_x': boundary['min_x'] + headset_radius + safety_margin,
+            'max_x': boundary['max_x'] - headset_radius - safety_margin,
+            'min_z': boundary['min_z'] + headset_radius + safety_margin,
+            'max_z': boundary['max_z'] - headset_radius - safety_margin,
+            'height': boundary['floor_y'] + headset_radius + 0.5  # Place above floor
+        }
+        
+        # Check if safe area is valid
+        if safe_area['min_x'] >= safe_area['max_x'] or safe_area['min_z'] >= safe_area['max_z']:
+            print("WARNING: Safe area too small, adjusting to minimal values")
+            # Use minimal margins if needed
+            safe_area['min_x'] = boundary['min_x'] + headset_radius
+            safe_area['max_x'] = boundary['max_x'] - headset_radius
+            safe_area['min_z'] = boundary['min_z'] + headset_radius
+            safe_area['max_z'] = boundary['max_z'] - headset_radius
+        
+        # Calculate center and dimensions
+        floor_center_x = (boundary['min_x'] + boundary['max_x']) / 2
+        floor_center_z = (boundary['min_z'] + boundary['max_z']) / 2
+        usable_width = safe_area['max_x'] - safe_area['min_x']
+        usable_depth = safe_area['max_z'] - safe_area['min_z']
         
         # Colors for different headsets
         colors = [
@@ -162,19 +266,26 @@ class HeadsetSimulation:
             (128, 0, 128)   # Purple
         ]
         
-        # Circle of headsets moving inward - Higher velocities
-        num_circle = 8
-        circle_radius = 25  # Increased radius for better collisions
+        # Circle of headsets - reduced number and speed for smaller safe area
+        num_circle = 6
+        # Use smaller radius to ensure they stay in bounds
+        circle_radius = min(usable_width, usable_depth) * 0.3
+        
         for i in range(num_circle):
             angle = (i / num_circle) * 2 * math.pi
-            pos = Vector(
-                circle_radius * math.cos(angle),
-                1,
-                circle_radius * math.sin(angle) - 10
-            )
             
-            # Set higher velocity for more dramatic collisions
-            speed = 20 + (i % 3)  # Significantly increased speed from 3+
+            # Calculate position within safe area
+            pos_x = floor_center_x + circle_radius * math.cos(angle)
+            pos_z = floor_center_z + circle_radius * math.sin(angle)
+            
+            # Clamp to safe boundaries
+            pos_x = max(safe_area['min_x'], min(safe_area['max_x'], pos_x))
+            pos_z = max(safe_area['min_z'], min(safe_area['max_z'], pos_z))
+            
+            pos = Vector(pos_x, safe_area['height'], pos_z)
+            
+            # Set velocity toward center with reduced speed
+            speed = 10.0  # Reduced from previous values
             vel = Vector(
                 -math.cos(angle) * speed,
                 0,
@@ -186,72 +297,31 @@ class HeadsetSimulation:
             model.setPosition(pos.x, pos.y, pos.z)
             
             colored_model = ColoredModel(model, diffuse_color=colors[i % len(colors)])
+            headsets.append(CollisionObject(colored_model, pos, vel, radius=headset_radius, elasticity=0.9))
+        
+        # Add a few simple headsets in random positions for variety
+        num_random = 6
+        for i in range(num_random):
+            # Random position within safe area
+            pos_x = safe_area['min_x'] + random.random() * (safe_area['max_x'] - safe_area['min_x'])
+            pos_z = safe_area['min_z'] + random.random() * (safe_area['max_z'] - safe_area['min_z'])
             
-            # Create collision object with larger radius and higher elasticity
-            headsets.append(CollisionObject(colored_model, pos, vel, radius=2.0, elasticity=0.95))
-        
-        # Triangle formation - now with initial velocities for better collisions
-        triangle_size = 3
-        start_z = -5
-        color_index = 0
-        for row in range(triangle_size):
-            for col in range(row + 1):
-                pos = Vector(
-                    (col - row/2) * 2.5,
-                    1,
-                    start_z + row * 2.5
-                )
-                
-                # Add actual velocities instead of tiny random ones
-                vel = Vector(
-                    (random.random() - 0.5) * 3.0,  # Stronger initial velocity
-                    0,
-                    (random.random() - 0.5) * 3.0   # Stronger initial velocity
-                )
-                
-                model = Model('./data/headset.obj')
-                model.normalizeGeometry()
-                model.setPosition(pos.x, pos.y, pos.z)
-                
-                colored_model = ColoredModel(model, diffuse_color=colors[color_index % len(colors)])
-                color_index += 1
-                
-                headsets.append(CollisionObject(colored_model, pos, vel, radius=2.0, elasticity=0.95))
-        
-        # "Cue ball" headsets - increased velocities
-        pos = Vector(0, 1, -25)
-        vel = Vector(6, 0, 6)  # Significantly increased speed and diagonal direction
-        
-        model = Model('./data/headset.obj')
-        model.normalizeGeometry()
-        model.setPosition(pos.x, pos.y, pos.z)
-        
-        colored_model = ColoredModel(model, diffuse_color=(255, 255, 255))
-        headsets.append(CollisionObject(colored_model, pos, vel, radius=2.0, elasticity=0.95))
-        
-        # Side headsets with increased velocities
-        pos = Vector(-18, 1, -15)
-        vel = Vector(7, 0, 2)  # Faster, diagonal motion
-        
-        model = Model('./data/headset.obj')
-        model.normalizeGeometry()
-        model.setPosition(pos.x, pos.y, pos.z)
-        
-        colored_model = ColoredModel(model, diffuse_color=(220, 220, 255))
-        headsets.append(CollisionObject(colored_model, pos, vel, radius=2.0, elasticity=0.95))
-        
-        pos = Vector(18, 1, -10)
-        vel = Vector(-7, 0, -3)  # Faster, diagonal motion
-        
-        model = Model('./data/headset.obj')
-        model.normalizeGeometry()
-        model.setPosition(pos.x, pos.y, pos.z)
-        
-        colored_model = ColoredModel(model, diffuse_color=(255, 220, 220))
-        headsets.append(CollisionObject(colored_model, pos, vel, radius=2.0, elasticity=0.95))
+            pos = Vector(pos_x, safe_area['height'], pos_z)
+            
+            # Random velocity
+            vel_x = (random.random() * 2 - 1) * 5.0
+            vel_z = (random.random() * 2 - 1) * 5.0
+            vel = Vector(vel_x, 0, vel_z)
+            
+            model = Model('./data/headset.obj')
+            model.normalizeGeometry()
+            model.setPosition(pos.x, pos.y, pos.z)
+            
+            colored_model = ColoredModel(model, diffuse_color=colors[i % len(colors)])
+            headsets.append(CollisionObject(colored_model, pos, vel, radius=headset_radius, elasticity=0.9))
         
         return headsets
-
+    
     def perspective_projection(self, x, y, z, width=None, height=None):
         """Project 3D coordinates to 2D screen space"""
         if width is None:
@@ -298,23 +368,231 @@ class HeadsetSimulation:
         
         return screen_x, screen_y
 
-    def update_floor_physics(self, dt):
-        """Update physics for floor headsets with more elastic collisions"""
+    def update_floor_physics_old(self, dt):
+        """Update physics for floor headsets with strict boundary enforcement"""
         # Fixed timestep for consistent physics
         fixed_dt = 1/60.0
         self.accumulator += dt
         
-        # Define boundary walls with more elasticity
+        # Get actual floor boundaries from floor vertices
+        if not hasattr(self, 'floor_object') or not self.floor_object:
+            print("ERROR: Floor object not available for physics boundaries")
+            return
+        
+        floor_model = self.floor_object.model
+        floor_vertices = []
+        
+        # Get all transformed vertices from the floor model
+        for i in range(len(floor_model.vertices)):
+            vertex = floor_model.getTransformedVertex(i)
+            floor_vertices.append(vertex)
+        
+        # Find the min and max boundaries from actual vertices
+        min_x = float('inf')
+        max_x = float('-inf')
+        min_z = float('inf')
+        max_z = float('-inf')
+        floor_y = 0
+        
+        for vertex in floor_vertices:
+            min_x = min(min_x, vertex.x)
+            max_x = max(max_x, vertex.x)
+            min_z = min(min_z, vertex.z)
+            max_z = max(max_z, vertex.z)
+            floor_y = vertex.y  # All floor vertices should have same Y
+        
+        # Define boundary using actual vertex positions
         boundary = {
-            'min_x': -30.0,
-            'max_x': 30.0,
-            'min_z': -40.0,
-            'max_z': 0.0,
-            'bounce_factor': 0.98  # Increased from 0.9 to 0.98 (almost no energy loss)
+            'min_x': min_x,
+            'max_x': max_x,
+            'min_z': min_z,
+            'max_z': max_z,
+            'floor_y': floor_y,
+            'bounce_factor': 0.9
         }
         
-        # Reduce friction drastically
-        self.friction_coefficient = 0.995  # Almost no friction (was 0.8)
+        # Print floor boundaries periodically for debugging
+        if self.frame_count % 60 == 0:
+            print(f"Floor boundaries: X=[{boundary['min_x']:.1f}, {boundary['max_x']:.1f}], Z=[{boundary['min_z']:.1f}, {boundary['max_z']:.1f}]")
+        
+        # Headset properties
+        headset_radius = 2.0
+        
+        # Minimal friction
+        self.friction_coefficient = 0.995
+        
+        while self.accumulator >= fixed_dt:
+            # Apply STRICT boundary enforcement FIRST, before any physics updates
+            for headset in self.floor_headsets:
+                # Enforce floor boundaries strictly - clamp positions
+                if headset.position.x - headset_radius < boundary['min_x']:
+                    headset.position.x = boundary['min_x'] + headset_radius
+                    headset.velocity.x = -abs(headset.velocity.x) * boundary['bounce_factor']  # Force positive velocity
+                
+                if headset.position.x + headset_radius > boundary['max_x']:
+                    headset.position.x = boundary['max_x'] - headset_radius
+                    headset.velocity.x = -abs(headset.velocity.x) * boundary['bounce_factor']  # Force negative velocity
+                
+                if headset.position.z - headset_radius < boundary['min_z']:
+                    headset.position.z = boundary['min_z'] + headset_radius
+                    headset.velocity.z = abs(headset.velocity.z) * boundary['bounce_factor']  # Force positive velocity
+                
+                if headset.position.z + headset_radius > boundary['max_z']:
+                    headset.position.z = boundary['max_z'] - headset_radius
+                    headset.velocity.z = -abs(headset.velocity.z) * boundary['bounce_factor']  # Force negative velocity
+                    
+                # Enforce minimum height
+                min_height = boundary['floor_y'] + headset_radius + 0.5
+                if headset.position.y < min_height:
+                    headset.position.y = min_height
+                    headset.velocity.y = abs(headset.velocity.y) * 0.5  # Bounce up
+            
+            # Clear collision records
+            for headset in self.floor_headsets:
+                headset.clear_collision_history()
+            
+            # Check collisions between headsets
+            for i in range(len(self.floor_headsets)):
+                for j in range(i + 1, len(self.floor_headsets)):
+                    if self.floor_headsets[i].check_collision(self.floor_headsets[j]):
+                        self.floor_headsets[i].resolve_collision(self.floor_headsets[j])
+                        
+                        # Add energy on collision
+                        energy_boost = 0.05
+                        self.floor_headsets[i].velocity.x *= (1.0 + energy_boost)
+                        self.floor_headsets[i].velocity.z *= (1.0 + energy_boost)
+                        self.floor_headsets[j].velocity.x *= (1.0 + energy_boost)
+                        self.floor_headsets[j].velocity.z *= (1.0 + energy_boost)
+            
+            # Update positions based on velocities
+            for headset in self.floor_headsets:
+                # Store previous position for detecting boundary violations
+                prev_x = headset.position.x
+                prev_z = headset.position.z
+                
+                # Update position
+                headset.update(fixed_dt)
+                
+                # Apply friction if on floor
+                min_height = boundary['floor_y'] + headset_radius + 0.5
+                if headset.position.y <= min_height:
+                    horizontal_speed_squared = (
+                        headset.velocity.x**2 + 
+                        headset.velocity.z**2
+                    )
+                    
+                    if horizontal_speed_squared > 0.001:
+                        headset.velocity.x *= self.friction_coefficient
+                        headset.velocity.z *= self.friction_coefficient
+                
+                # CRITICAL: Detect and prevent boundary violations after position update
+                boundary_violated = False
+                
+                if headset.position.x - headset_radius < boundary['min_x']:
+                    headset.position.x = boundary['min_x'] + headset_radius
+                    headset.velocity.x = abs(headset.velocity.x) * boundary['bounce_factor']
+                    boundary_violated = True
+                    
+                elif headset.position.x + headset_radius > boundary['max_x']:
+                    headset.position.x = boundary['max_x'] - headset_radius
+                    headset.velocity.x = -abs(headset.velocity.x) * boundary['bounce_factor']
+                    boundary_violated = True
+                
+                if headset.position.z - headset_radius < boundary['min_z']:
+                    headset.position.z = boundary['min_z'] + headset_radius
+                    headset.velocity.z = abs(headset.velocity.z) * boundary['bounce_factor']
+                    boundary_violated = True
+                    
+                elif headset.position.z + headset_radius > boundary['max_z']:
+                    headset.position.z = boundary['max_z'] - headset_radius
+                    headset.velocity.z = -abs(headset.velocity.z) * boundary['bounce_factor']
+                    boundary_violated = True
+                
+                # If a boundary was violated, slightly reduce velocity to prevent continuous bouncing
+                if boundary_violated:
+                    headset.velocity.x *= 0.95
+                    headset.velocity.z *= 0.95
+                    
+                    # Log boundary violations at a reasonable interval
+                    if self.frame_count % 30 == 0:
+                        print(f"Boundary violation corrected: ({prev_x:.1f}, {prev_z:.1f}) -> ({headset.position.x:.1f}, {headset.position.z:.1f})")
+                
+                # Force minimum height
+                if headset.position.y < min_height:
+                    headset.position.y = min_height
+                    headset.velocity.y = abs(headset.velocity.y) * 0.5
+                
+                # Update model position
+                headset.model.model.setPosition(headset.position.x, headset.position.y, headset.position.z)
+            
+            # Add random impulses occasionally to keep motion interesting
+            if self.frame_count % 30 == 0 and self.frame_count < self.target_frames * 0.9:
+                for headset in self.floor_headsets:
+                    # Calculate distance from edges
+                    dist_to_min_x = headset.position.x - boundary['min_x']
+                    dist_to_max_x = boundary['max_x'] - headset.position.x
+                    dist_to_min_z = headset.position.z - boundary['min_z']
+                    dist_to_max_z = boundary['max_z'] - headset.position.z
+                    
+                    # Only add impulse if not too close to any edge
+                    min_dist = min(dist_to_min_x, dist_to_max_x, dist_to_min_z, dist_to_max_z)
+                    if min_dist > headset_radius * 3:  # Safe distance from edges
+                        speed_sq = headset.velocity.x**2 + headset.velocity.z**2
+                        
+                        if speed_sq < 5.0:  # Only boost slower objects
+                            headset.velocity.x += (random.random() * 2 - 1) * 0.8
+                            headset.velocity.z += (random.random() * 2 - 1) * 0.8
+            
+            self.accumulator -= fixed_dt
+    
+    def update_floor_physics_old(self, dt):
+        """Update physics for floor headsets treating boundary collisions as elastic collisions"""
+        # Fixed timestep for consistent physics
+        fixed_dt = 1/60.0
+        self.accumulator += dt
+        
+        # Get actual floor boundaries from floor vertices
+        if not hasattr(self, 'floor_object') or not self.floor_object:
+            print("ERROR: Floor object not available for physics boundaries")
+            return
+        
+        floor_model = self.floor_object.model
+        floor_vertices = []
+        
+        # Get all transformed vertices from the floor model
+        for i in range(len(floor_model.vertices)):
+            vertex = floor_model.getTransformedVertex(i)
+            floor_vertices.append(vertex)
+        
+        # Find the min and max boundaries from actual vertices
+        min_x = float('inf')
+        max_x = float('-inf')
+        min_z = float('inf')
+        max_z = float('-inf')
+        floor_y = 0
+        
+        for vertex in floor_vertices:
+            min_x = min(min_x, vertex.x)
+            max_x = max(max_x, vertex.x)
+            min_z = min(min_z, vertex.z)
+            max_z = max(max_z, vertex.z)
+            floor_y = vertex.y  # All floor vertices should have same Y
+        
+        # Define boundary using actual vertex positions
+        boundary = {
+            'min_x': min_x,
+            'max_x': max_x,
+            'min_z': min_z,
+            'max_z': max_z,
+            'floor_y': floor_y,
+            'elasticity': 0.95  # High elasticity for boundaries
+        }
+        
+        # Headset properties
+        headset_radius = 2.0
+        
+        # Minimal friction for longer movement
+        self.friction_coefficient = 0.995
         
         while self.accumulator >= fixed_dt:
             # Clear collision records
@@ -327,88 +605,351 @@ class HeadsetSimulation:
                     if self.floor_headsets[i].check_collision(self.floor_headsets[j]):
                         self.floor_headsets[i].resolve_collision(self.floor_headsets[j])
                         
-                        # Add more energy on collision to maintain excitement
+                        # Add energy on collision
                         energy_boost = 0.05
                         self.floor_headsets[i].velocity.x *= (1.0 + energy_boost)
                         self.floor_headsets[i].velocity.z *= (1.0 + energy_boost)
                         self.floor_headsets[j].velocity.x *= (1.0 + energy_boost)
                         self.floor_headsets[j].velocity.z *= (1.0 + energy_boost)
             
-            # Apply floor constraints and friction
+            # Update positions and check boundary collisions
             for headset in self.floor_headsets:
-                # Update position based on velocity
-                headset.update(fixed_dt)
+                # Store previous position
+                prev_x = headset.position.x
+                prev_z = headset.position.z
+                prev_y = headset.position.y
                 
-                # Apply friction when on floor, but only if moving fast enough
-                if headset.position.y - headset.radius <= 0.01:
-                    headset.position.y = headset.radius
-            
-                    # Apply friction to horizontal velocity components
-                    horizontal_speed_squared = (
-                        headset.velocity.x**2 + 
-                        headset.velocity.z**2
-                    )
+                # Apply velocity
+                next_x = prev_x + headset.velocity.x * fixed_dt
+                next_z = prev_z + headset.velocity.z * fixed_dt
+                next_y = prev_y + headset.velocity.y * fixed_dt
+                
+                # Check boundary collisions and handle them like headset collisions
+                # X-axis boundary collisions
+                x_collision = False
+                if next_x - headset_radius < boundary['min_x']:
+                    # Left boundary collision
+                    x_collision = True
+                    # Calculate penetration depth
+                    penetration = (boundary['min_x'] + headset_radius) - next_x
+                    # Position correction - place exactly at boundary
+                    next_x = boundary['min_x'] + headset_radius
                     
-                    # Only apply friction if moving horizontally
+                    # Elastic collision with boundary - treat like a collision with a massive object
+                    headset.velocity.x = abs(headset.velocity.x) * boundary['elasticity']
+                    # Add a small random z component to make it more interesting
+                    headset.velocity.z += (random.random() * 2 - 1) * abs(headset.velocity.x) * 0.2
+                    
+                elif next_x + headset_radius > boundary['max_x']:
+                    # Right boundary collision
+                    x_collision = True
+                    # Calculate penetration depth
+                    penetration = next_x - (boundary['max_x'] - headset_radius)
+                    # Position correction
+                    next_x = boundary['max_x'] - headset_radius
+                    
+                    # Elastic collision with boundary
+                    headset.velocity.x = -abs(headset.velocity.x) * boundary['elasticity']
+                    # Add a small random z component
+                    headset.velocity.z += (random.random() * 2 - 1) * abs(headset.velocity.x) * 0.2
+                
+                # Z-axis boundary collisions
+                z_collision = False
+                if next_z - headset_radius < boundary['min_z']:
+                    # Back boundary collision
+                    z_collision = True
+                    # Calculate penetration depth
+                    penetration = (boundary['min_z'] + headset_radius) - next_z
+                    # Position correction
+                    next_z = boundary['min_z'] + headset_radius
+                    
+                    # Elastic collision with boundary
+                    headset.velocity.z = abs(headset.velocity.z) * boundary['elasticity']
+                    # Add a small random x component
+                    headset.velocity.x += (random.random() * 2 - 1) * abs(headset.velocity.z) * 0.2
+                    
+                elif next_z + headset_radius > boundary['max_z']:
+                    # Front boundary collision
+                    z_collision = True
+                    # Calculate penetration depth
+                    penetration = next_z - (boundary['max_z'] - headset_radius)
+                    # Position correction
+                    next_z = boundary['max_z'] - headset_radius
+                    
+                    # Elastic collision with boundary
+                    headset.velocity.z = -abs(headset.velocity.z) * boundary['elasticity']
+                    # Add a small random x component
+                    headset.velocity.x += (random.random() * 2 - 1) * abs(headset.velocity.z) * 0.2
+                
+                # If any boundary collision occurred, add a small random impulse
+                if x_collision or z_collision:
+                    # Add energy boost on boundary collision (similar to headset collisions)
+                    energy_boost = 0.05
+                    headset.velocity.x *= (1.0 + energy_boost)
+                    headset.velocity.z *= (1.0 + energy_boost)
+                    
+                    # Log collision for debugging
+                    if self.frame_count % 60 == 0:  # Don't log too often
+                        print(f"Boundary collision: pos=({next_x:.1f}, {next_z:.1f}), vel=({headset.velocity.x:.1f}, {headset.velocity.z:.1f})")
+                
+                # Update position
+                headset.position.x = next_x
+                headset.position.z = next_z
+                
+                # Floor collision handling (y-axis)
+                min_height = boundary['floor_y'] + headset_radius + 0.5
+                if next_y < min_height:
+                    # Floor collision
+                    headset.position.y = min_height
+                    headset.velocity.y = abs(headset.velocity.y) * 0.5  # Bounce with some energy loss
+                    
+                    # Apply friction only when in contact with floor
+                    horizontal_speed_squared = headset.velocity.x**2 + headset.velocity.z**2
                     if horizontal_speed_squared > 0.001:
-                        # Apply very minimal friction
                         headset.velocity.x *= self.friction_coefficient
                         headset.velocity.z *= self.friction_coefficient
-                        
-                        # Never completely stop objects - always maintain some movement
-                        if horizontal_speed_squared * self.friction_coefficient**2 < 0.1:
-                            # Add small random impulse to keep objects in motion
-                            headset.velocity.x += (random.random() * 2 - 1) * 0.2
-                            headset.velocity.z += (random.random() * 2 - 1) * 0.2
-                
-                # Apply boundary constraints with better restitution
-                if headset.position.x - headset.radius < boundary['min_x']:
-                    headset.position.x = boundary['min_x'] + headset.radius
-                    headset.velocity.x = -headset.velocity.x * boundary['bounce_factor']
-                    
-                    # Add energy on boundary collision
-                    headset.velocity.z += (random.random() * 2 - 1) * 0.8
-                    
-                elif headset.position.x + headset.radius > boundary['max_x']:
-                    headset.position.x = boundary['max_x'] - headset.radius
-                    headset.velocity.x = -headset.velocity.x * boundary['bounce_factor']
-                    
-                    # Add energy on boundary collision
-                    headset.velocity.z += (random.random() * 2 - 1) * 0.8
-                
-                if headset.position.z - headset.radius < boundary['min_z']:
-                    headset.position.z = boundary['min_z'] + headset.radius
-                    headset.velocity.z = -headset.velocity.z * boundary['bounce_factor']
-                    
-                    # Add energy on boundary collision
-                    headset.velocity.x += (random.random() * 2 - 1) * 0.8
-                    
-                elif headset.position.z + headset.radius > boundary['max_z']:
-                    headset.position.z = boundary['max_z'] - headset.radius
-                    headset.velocity.z = -headset.velocity.z * boundary['bounce_factor']
-                    
-                    # Add energy on boundary collision
-                    headset.velocity.x += (random.random() * 2 - 1) * 0.8
+                else:
+                    headset.position.y = next_y
+                    # Apply gravity
+                    headset.velocity.y -= 9.8 * fixed_dt
                 
                 # Update model position
                 headset.model.model.setPosition(headset.position.x, headset.position.y, headset.position.z)
             
-            # Every 30 frames (about 0.5 seconds), add random impulses to maintain movement
+            # Every 30 frames, add random impulses to maintain movement
             if self.frame_count % 30 == 0 and self.frame_count < self.target_frames * 0.9:
                 for headset in self.floor_headsets:
-                    # Add random impulses to all headsets to keep motion interesting
-                    speed_sq = headset.velocity.x**2 + headset.velocity.z**2
+                    # Calculate distance from edges to ensure we don't push toward boundaries
+                    dist_to_min_x = headset.position.x - boundary['min_x'] - headset_radius
+                    dist_to_max_x = boundary['max_x'] - headset.position.x - headset_radius
+                    dist_to_min_z = headset.position.z - boundary['min_z'] - headset_radius
+                    dist_to_max_z = boundary['max_z'] - headset.position.z - headset_radius
                     
-                    if speed_sq < 8.0:  # Only boost slower objects
-                        # Add stronger random impulse
-                        headset.velocity.x += (random.random() * 2 - 1) * 1.2
-                        headset.velocity.z += (random.random() * 2 - 1) * 1.2
+                    # Get minimum distance to any boundary
+                    min_dist = min(dist_to_min_x, dist_to_max_x, dist_to_min_z, dist_to_max_z)
+                    
+                    # Only add impulse if not too close to boundary and moving slowly
+                    if min_dist > headset_radius * 2:
+                        speed_sq = headset.velocity.x**2 + headset.velocity.z**2
+                        
+                        if speed_sq < 5.0:  # Only boost slower objects
+                            # Add impulse toward center if close to boundary
+                            if min_dist < headset_radius * 4:
+                                # Calculate direction to center
+                                center_x = (boundary['min_x'] + boundary['max_x']) / 2
+                                center_z = (boundary['min_z'] + boundary['max_z']) / 2
+                                
+                                # Direction vector to center
+                                dir_x = center_x - headset.position.x
+                                dir_z = center_z - headset.position.z
+                                
+                                # Normalize
+                                mag = math.sqrt(dir_x**2 + dir_z**2)
+                                if mag > 0:
+                                    dir_x /= mag
+                                    dir_z /= mag
+                                
+                                # Add impulse toward center
+                                headset.velocity.x += dir_x * 1.0
+                                headset.velocity.z += dir_z * 1.0
+                            else:
+                                # Random impulse if not near boundary
+                                headset.velocity.x += (random.random() * 2 - 1) * 0.8
+                                headset.velocity.z += (random.random() * 2 - 1) * 0.8
             
             self.accumulator -= fixed_dt
-
+        
+        # Final safety check - teleport any headsets that somehow got out
+        for headset in self.floor_headsets:
+            outside_boundary = (
+                headset.position.x - headset_radius < boundary['min_x'] or
+                headset.position.x + headset_radius > boundary['max_x'] or
+                headset.position.z - headset_radius < boundary['min_z'] or
+                headset.position.z + headset_radius > boundary['max_z']
+            )
+            
+            if outside_boundary:
+                # Last resort - emergency teleport to center
+                center_x = (boundary['min_x'] + boundary['max_x']) / 2
+                center_z = (boundary['min_z'] + boundary['max_z']) / 2
+                
+                headset.position.x = center_x
+                headset.position.z = center_z
+                
+                # Update model position
+                headset.model.model.setPosition(headset.position.x, headset.position.y, headset.position.z)
+                print(f"EMERGENCY: Headset escaped boundaries - teleported to center")
+    
+    def update_floor_physics(self, dt):
+        """Update physics for floor headsets with guaranteed containment"""
+        # Fixed timestep for consistent physics
+        fixed_dt = 1/60.0
+        self.accumulator += dt
+        
+        # Get actual floor boundaries from floor vertices
+        if not hasattr(self, 'floor_object') or not self.floor_object:
+            print("ERROR: Floor object not available for physics boundaries")
+            return
+        
+        floor_model = self.floor_object.model
+        floor_vertices = []
+        
+        # Get all transformed vertices from the floor model
+        for i in range(len(floor_model.vertices)):
+            vertex = floor_model.getTransformedVertex(i)
+            floor_vertices.append(vertex)
+        
+        # Find the min and max boundaries from actual vertices
+        min_x = float('inf')
+        max_x = float('-inf')
+        min_z = float('inf')
+        max_z = float('-inf')
+        floor_y = 0
+        
+        for vertex in floor_vertices:
+            min_x = min(min_x, vertex.x)
+            max_x = max(max_x, vertex.x)
+            min_z = min(min_z, vertex.z)
+            max_z = max(max_z, vertex.z)
+            floor_y = vertex.y  # All floor vertices should have same Y
+        
+        # Define boundary using actual vertex positions with safety margin
+        boundary = {
+            'min_x': min_x,
+            'max_x': max_x,
+            'min_z': min_z,
+            'max_z': max_z,
+            'floor_y': floor_y,
+            'elasticity': 0.95  # High elasticity for boundaries
+        }
+        
+        # Headset properties
+        headset_radius = 2.0
+        
+        # Minimal friction
+        self.friction_coefficient = 0.995
+        
+        while self.accumulator >= fixed_dt:
+            # Clear collision records
+            for headset in self.floor_headsets:
+                headset.clear_collision_history()
+            
+            # Check collisions between headsets
+            for i in range(len(self.floor_headsets)):
+                for j in range(i + 1, len(self.floor_headsets)):
+                    if self.floor_headsets[i].check_collision(self.floor_headsets[j]):
+                        self.floor_headsets[i].resolve_collision(self.floor_headsets[j])
+            
+            # Update positions and ensure containment within boundaries
+            for headset in self.floor_headsets:
+                # Apply velocity to get next position
+                next_x = headset.position.x + headset.velocity.x * fixed_dt
+                next_z = headset.position.z + headset.velocity.z * fixed_dt
+                next_y = headset.position.y + headset.velocity.y * fixed_dt
+                
+                # Check and handle boundary containment
+                if next_x - headset_radius < boundary['min_x']:
+                    # Left boundary collision
+                    excess = boundary['min_x'] - (next_x - headset_radius)
+                    next_x = boundary['min_x'] + headset_radius
+                    # Reflection with elasticity (like bouncing off another headset)
+                    headset.velocity.x = abs(headset.velocity.x) * boundary['elasticity']
+                
+                if next_x + headset_radius > boundary['max_x']:
+                    # Right boundary collision
+                    excess = (next_x + headset_radius) - boundary['max_x']
+                    next_x = boundary['max_x'] - headset_radius
+                    headset.velocity.x = -abs(headset.velocity.x) * boundary['elasticity']
+                
+                if next_z - headset_radius < boundary['min_z']:
+                    # Back boundary collision
+                    excess = boundary['min_z'] - (next_z - headset_radius)
+                    next_z = boundary['min_z'] + headset_radius
+                    headset.velocity.z = abs(headset.velocity.z) * boundary['elasticity']
+                
+                if next_z + headset_radius > boundary['max_z']:
+                    # Front boundary collision
+                    excess = (next_z + headset_radius) - boundary['max_z']
+                    next_z = boundary['max_z'] - headset_radius
+                    headset.velocity.z = -abs(headset.velocity.z) * boundary['elasticity']
+                
+                # Floor collision handling
+                min_height = boundary['floor_y'] + headset_radius + 0.5
+                if next_y < min_height:
+                    # Floor collision
+                    next_y = min_height
+                    headset.velocity.y = abs(headset.velocity.y) * 0.5
+                    
+                    # Apply friction on floor
+                    horizontal_speed_squared = headset.velocity.x**2 + headset.velocity.z**2
+                    if horizontal_speed_squared > 0.001:
+                        headset.velocity.x *= self.friction_coefficient
+                        headset.velocity.z *= self.friction_coefficient
+                else:
+                    # Apply gravity
+                    headset.velocity.y -= 9.8 * fixed_dt
+                
+                # Update position
+                headset.position.x = next_x
+                headset.position.z = next_z
+                headset.position.y = next_y
+                
+                # CRITICAL: Double-check bounds again after update to ensure no escape
+                # This is a fail-safe mechanism
+                if headset.position.x - headset_radius < boundary['min_x']:
+                    headset.position.x = boundary['min_x'] + headset_radius
+                    headset.velocity.x = abs(headset.velocity.x) * boundary['elasticity']
+                
+                if headset.position.x + headset_radius > boundary['max_x']:
+                    headset.position.x = boundary['max_x'] - headset_radius
+                    headset.velocity.x = -abs(headset.velocity.x) * boundary['elasticity']
+                
+                if headset.position.z - headset_radius < boundary['min_z']:
+                    headset.position.z = boundary['min_z'] + headset_radius
+                    headset.velocity.z = abs(headset.velocity.z) * boundary['elasticity']
+                
+                if headset.position.z + headset_radius > boundary['max_z']:
+                    headset.position.z = boundary['max_z'] - headset_radius
+                    headset.velocity.z = -abs(headset.velocity.z) * boundary['elasticity']
+                
+                # Update model position
+                headset.model.model.setPosition(headset.position.x, headset.position.y, headset.position.z)
+            
+            self.accumulator -= fixed_dt
+        
+        # Third safety check after all updates to absolutely guarantee containment
+        for headset in self.floor_headsets:
+            contained = True
+            
+            if headset.position.x - headset_radius < boundary['min_x']:
+                headset.position.x = boundary['min_x'] + headset_radius
+                headset.velocity.x = abs(headset.velocity.x) * boundary['elasticity']
+                contained = False
+            
+            if headset.position.x + headset_radius > boundary['max_x']:
+                headset.position.x = boundary['max_x'] - headset_radius
+                headset.velocity.x = -abs(headset.velocity.x) * boundary['elasticity']
+                contained = False
+            
+            if headset.position.z - headset_radius < boundary['min_z']:
+                headset.position.z = boundary['min_z'] + headset_radius
+                headset.velocity.z = abs(headset.velocity.z) * boundary['elasticity']
+                contained = False
+            
+            if headset.position.z + headset_radius > boundary['max_z']:
+                headset.position.z = boundary['max_z'] - headset_radius
+                headset.velocity.z = -abs(headset.velocity.z) * boundary['elasticity']
+                contained = False
+            
+            if not contained:
+                # Update model position if corrections were made
+                headset.model.model.setPosition(headset.position.x, headset.position.y, headset.position.z)
+                if self.frame_count % 60 == 0:
+                    print("Applied tertiary boundary enforcement")
+    
     def render_model(self, model_obj, floor=False):
-        """Render a 3D model with lighting"""
-        # Get the actual model (handle both direct models and ColoredModel objects)
+        """Render a 3D model with lighting - modified to fix Z-buffer issues"""
+        # Get the actual model
         model = getattr(model_obj, 'model', model_obj)
         
         # Precalculate transformed vertices
@@ -419,7 +960,7 @@ class HeadsetSimulation:
         
         # Calculate face normals and vertex normals
         face_normals = {}
-        for face in model.faces:
+        for face_idx, face in enumerate(model.faces):
             v0 = transformed_vertices[face[0]]
             v1 = transformed_vertices[face[1]]
             v2 = transformed_vertices[face[2]]
@@ -441,16 +982,20 @@ class HeadsetSimulation:
                     normal = normal + face_normal
                 vertex_normals.append(normal.normalize())
             else:
-                vertex_normals.append(Vector(0, 1, 0))
+                vertex_normals.append(Vector(0, 1, 0))  # Default up normal
         
         # Get model color
-        if hasattr(model_obj, 'diffuse_color'):
-            model_color = model_obj.diffuse_color
-        elif hasattr(model, 'diffuse_color'):
-            model_color = model.diffuse_color
+        if floor:
+            model_color = (180, 180, 180)  # Light grey for floor
         else:
-            model_color = (200, 200, 200)
+            if hasattr(model_obj, 'diffuse_color'):
+                model_color = model_obj.diffuse_color
+            elif hasattr(model, 'diffuse_color'):
+                model_color = model.diffuse_color
+            else:
+                model_color = (200, 200, 200)
         
+        # CRITICAL: Skip backface culling for floor
         # Render faces
         for face in model.faces:
             v0 = transformed_vertices[face[0]]
@@ -461,7 +1006,7 @@ class HeadsetSimulation:
             n1 = vertex_normals[face[1]]
             n2 = vertex_normals[face[2]]
             
-            # Backface culling
+            # Backface culling - SKIP for floor objects
             if not floor:
                 avg_normal = (n0 + n1 + n2).normalize()
                 view_dir = Vector(
@@ -482,26 +1027,103 @@ class HeadsetSimulation:
                     continue
                 
                 # Calculate lighting
-                intensity = max(0.2, n * self.light_dir)
+                if floor:
+                    # For floor, use a fixed light grey color
+                    r, g, b = model_color
+                    color = Color(r, g, b, 255)
+                else:
+                    # For other objects, apply regular lighting
+                    intensity = max(0.2, n * self.light_dir)
+                    r, g, b = model_color
+                    color = Color(
+                        int(r * intensity),
+                        int(g * intensity),
+                        int(b * intensity),
+                        255
+                    )
                 
-                r, g, b = model_color
-                color = Color(
-                    int(r * intensity),
-                    int(g * intensity),
-                    int(b * intensity),
-                    255
-                )
+                # Create point with correct z-value
+                # CRUCIAL FIX: For floor, use a significantly lower z-value
+                if floor:
+                    # Use a very low z-value to ensure floor is drawn behind everything
+                    point = Point(int(screen_x), int(screen_y), v.z - 1000.0, color)
+                else:
+                    point = Point(int(screen_x), int(screen_y), v.z, color)
                 
-                point = Point(int(screen_x), int(screen_y), v.z, color)
                 point.normal = n
                 triangle_points.append(point)
             
             # Render triangle if all points are valid
             if len(triangle_points) == 3:
-                # Create a fixed version of Triangle.draw_faster that properly handles integers
                 self.draw_triangle(triangle_points[0], triangle_points[1], triangle_points[2])
 
     def draw_triangle(self, p0, p1, p2):
+        """Draw a triangle with properly converted integer coordinates with Z-buffer handling"""
+        # Create a Triangle instance
+        tri = Triangle(p0, p1, p2)
+        
+        # Special Z-buffer handling for floor
+        is_floor_triangle = False
+        avg_y = (p0.y + p1.y + p2.y) / 3.0
+        if avg_y < 0.1:  # If it's near y=0, it's probably the floor
+            is_floor_triangle = True
+        
+        # Calculate bounding box with integer conversion
+        ymin = max(min(p0.y, p1.y, p2.y), 0)
+        ymax = min(max(p0.y, p1.y, p2.y), self.image.height - 1)
+        
+        # Convert to integers for range()
+        ymin_int = int(ymin)
+        ymax_int = int(ymax)
+        
+        # Iterate over scan lines
+        for y in range(ymin_int, ymax_int + 1):
+            x_values = []
+            
+            # Find intersections with edges
+            for edge_start, edge_end in [(p0, p1), (p1, p2), (p2, p0)]:
+                if (edge_start.y <= y <= edge_end.y) or (edge_end.y <= y <= edge_start.y):
+                    if edge_end.y == edge_start.y:  # Skip horizontal edges
+                        continue
+                    
+                    if edge_start.y == y:
+                        x_values.append(edge_start.x)
+                    elif edge_end.y == y:
+                        x_values.append(edge_end.x)
+                    else:
+                        t = (y - edge_start.y) / (edge_end.y - edge_start.y)
+                        x = edge_start.x + t * (edge_end.x - edge_start.x)
+                        x_values.append(x)
+            
+            if len(x_values) > 0:
+                # Sort and convert to integers
+                if len(x_values) == 1:
+                    x_start = x_values[0]
+                    x_end = x_start
+                else:
+                    x_start, x_end = sorted(x_values)[:2]
+                
+                x_start_int = max(int(x_start), 0)
+                x_end_int = min(int(x_end), self.image.width - 1)
+                
+                # Draw horizontal span
+                for x in range(x_start_int, x_end_int + 1):
+                    point = Point(x, y, color=None)
+                    in_triangle, color, z_value = tri.contains_point(point)
+                    
+                    if in_triangle:
+                        # For floor triangles, slightly decrease z-value to ensure objects appear on top
+                        # This is the key fix - it creates a small Z-buffer bias for the floor
+                        if is_floor_triangle:
+                            z_value -= 0.01
+                        
+                        # Perform z-buffer check
+                        buffer_index = y * self.image.width + x
+                        if buffer_index < len(self.zBuffer) and self.zBuffer[buffer_index] < z_value:
+                            self.zBuffer[buffer_index] = z_value
+                            self.image.setPixel(x, y, color)
+
+    def draw_triangle_old(self, p0, p1, p2):
         """Draw a triangle with properly converted integer coordinates"""
         # Create a Triangle instance
         tri = Triangle(p0, p1, p2)
@@ -555,35 +1177,6 @@ class HeadsetSimulation:
                         if buffer_index < len(self.zBuffer) and self.zBuffer[buffer_index] < z_value:
                             self.zBuffer[buffer_index] = z_value
                             self.image.setPixel(x, y, color)
-
-    # def render_floor(self):
-    #     """Render a simple floor grid"""
-    #     size = 30
-    #     height = 0
-        
-    #     # Floor corners
-    #     corners = [
-    #         Vector(-size, height, -size - 10),
-    #         Vector(size, height, -size - 10),
-    #         Vector(size, height, size - 10),
-    #         Vector(-size, height, size - 10)
-    #     ]
-        
-    #     # Create floor points
-    #     p0 = Point(corners[0].x, corners[0].y, corners[0].z)
-    #     p1 = Point(corners[1].x, corners[1].y, corners[1].z)
-    #     p2 = Point(corners[2].x, corners[2].y, corners[2].z)
-    #     p3 = Point(corners[3].x, corners[3].y, corners[3].z)
-        
-    #     # Set normal and color
-    #     normal = Vector(0, 1, 0)
-    #     for p in [p0, p1, p2, p3]:
-    #         p.normal = normal
-    #         p.color = Color(100, 100, 100, 255)
-        
-    #     # Render floor triangles
-    #     self.draw_triangle(p0, p1, p2)
-    #     self.draw_triangle(p0, p2, p3)
 
     def render_floor(self):
         """Render a white floor with grid lines"""
@@ -674,11 +1267,30 @@ class HeadsetSimulation:
         self.image = Image(self.width, self.height, Color(20, 20, 40, 255))
         self.zBuffer = [-float('inf')] * self.width * self.height
         
+        # ----- Debug visualization for floor boundaries -----
+        # Draw a wireframe boundary to show floor position
+        boundary = {
+            'min_x': -30.0,
+            'max_x': 30.0,
+            'min_z': -40.0,
+            'max_z': 0.0,
+            'height': 5.0
+        }
+        
+        # Project floor corners to screen space for debugging
+        floor_corners = [
+            Vector(boundary['min_x'], boundary['height'], boundary['min_z']),
+            Vector(boundary['max_x'], boundary['height'], boundary['min_z']),
+            Vector(boundary['max_x'], boundary['height'], boundary['max_z']),
+            Vector(boundary['min_x'], boundary['height'], boundary['max_z'])
+        ]
+                
         # Render floor object first (so it's behind everything else)
         if hasattr(self, 'floor_object') and self.floor_object:
             self.render_model(self.floor_object, True)
         else:
             # Render simple floor if floor model failed to load
+            print("Falling back to simple floor rendering") # Debug output
             self.render_floor()
         
         # Render main headset
@@ -688,13 +1300,11 @@ class HeadsetSimulation:
         for headset in self.floor_headsets:
             self.render_model(headset.model)
 
+        # Apply post-processing effects
         if self.dof_enabled:
             self.image = self.depth_of_field.process(self.image, self.zBuffer, self.width, self.height)
-    
         
-        # Apply motion blur if enabled
         if self.blur_enabled:
-            # Use per_object_velocity_blur from your MotionBlurEffect class
             final_image = self.motion_blur.per_object_velocity_blur(
                 self.image,
                 self.floor_headsets,
@@ -716,7 +1326,6 @@ class HeadsetSimulation:
                     self.screen.set_at((x, y), (r, g, b))
         
         # Draw boundary and debug info
-        self.render_boundaries()
         self.draw_focal_plane()
         self.draw_debug_info()
         
@@ -726,45 +1335,6 @@ class HeadsetSimulation:
         # Capture frame for video if recording
         if self.is_recording:
             self.video_recorder.capture_frame(self.screen)
-
-    def render_boundaries(self):
-        """Render boundary lines for the floor area"""
-        boundary = {
-            'min_x': -30.0,
-            'max_x': 30.0,
-            'min_z': -40.0,
-            'max_z': 0.0,
-            'height': 5.0
-        }
-        
-        # Draw boundary edges
-        wall_color = (100, 100, 220)
-        
-        # Floor corners (already on ground)
-        floor_points = [
-            (boundary['min_x'], 0, boundary['min_z']),
-            (boundary['max_x'], 0, boundary['min_z']),
-            (boundary['max_x'], 0, boundary['max_z']),
-            (boundary['min_x'], 0, boundary['max_z'])
-        ]
-        
-        # Project points to screen
-        screen_points = []
-        for point in floor_points:
-            screen_point = self.perspective_projection(point[0], point[1], point[2])
-            screen_points.append(screen_point)
-        
-        # Draw floor boundary
-        for i in range(4):
-            next_i = (i + 1) % 4
-            if screen_points[i][0] >= 0 and screen_points[next_i][0] >= 0:
-                pygame.draw.line(
-                    self.screen,
-                    wall_color,
-                    screen_points[i],
-                    screen_points[next_i],
-                    1
-                )
 
     def draw_debug_info(self):
         """Draw debug information on screen"""
@@ -864,7 +1434,6 @@ class HeadsetSimulation:
         ffmpeg_path = self.video_recorder.generate_ffmpeg_video(quality="high")
         if ffmpeg_path:
             print(f"High quality video saved to: {ffmpeg_path}")
-
 
     def load_imu_data(self):
         """Load IMU data for headset rotation"""
@@ -970,9 +1539,8 @@ class HeadsetSimulation:
             # Exit either when all IMU data is used or we reach target frames
             if (self.sensor_data and self.current_data_index >= len(self.sensor_data)) or \
             self.frame_count >= self.target_frames:
-                if self.is_recording:
-                    self.stop_recording()
-                print(f"Simulation finished after {self.frame_count} frames")
+                self.stop_recording()
+                print("Simulation complete")
                 break
         
         # Clean up
