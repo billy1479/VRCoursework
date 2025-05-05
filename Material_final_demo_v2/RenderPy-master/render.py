@@ -227,8 +227,8 @@ class HeadsetSimulation:
         }
         
         # Headset properties
-        headset_radius = 2.0
-        safety_margin = 2.0
+        headset_radius = 1.0
+        safety_margin = 1.0
         
         # Define safe area with margin for headset radius
         safe_area = {
@@ -1436,50 +1436,51 @@ class HeadsetSimulation:
             print(f"High quality video saved to: {ffmpeg_path}")
 
     def load_imu_data(self):
-        """Load IMU data for headset rotation"""
-        imu_data_paths = ["../IMUdata.csv", "./IMUdata.csv"]
+        path = "../IMUdata.csv"
         self.sensor_data = None
-        
-        for path in imu_data_paths:
-            try:
-                if os.path.exists(path):
-                    print(f"Found IMU data at {path}")
-                    parser = SensorDataParser(path)
-                    self.sensor_data = parser.parse()
-                    print(f"Loaded {len(self.sensor_data)} IMU data points")
-                    
-                    # Calculate frames needed for 27 seconds at 30fps
-                    self.target_frames = 810  # ~27 seconds at 30fps
-                    
-                    # Calculate IMU samples to process per frame
-                    self.samples_per_frame = max(1, len(self.sensor_data) / self.target_frames)
-                    print(f"Using ~{self.samples_per_frame:.2f} IMU samples per frame for 27-second video")
-                    
-                    # Create and calibrate filter
-                    self.dr_filter = DeadReckoningFilter(alpha=0.5) # testing to see the effect
+        self.dr_filter = None  # Initialize to None explicitly
+    
+        try:
+            if os.path.exists(path):
+                print(f"Found IMU data at {path}")
+                parser = SensorDataParser(path)
+                self.sensor_data = parser.parse()
+                print(f"Loaded {len(self.sensor_data)} IMU data points")
+                
+                # Target for ~27 seconds at 30fps
+                self.target_frames = 810
+                
+                # Calculate speedup factor needed to fit all IMU data in target frames
+                self.imu_speedup_factor = max(1, len(self.sensor_data) / self.target_frames)
+                print(f"Using speedup factor of {self.imu_speedup_factor:.2f}x to fit all IMU data in 27 seconds")
+                
+                # Create and calibrate filter
+                self.dr_filter = DeadReckoningFilter(alpha=0.98)  # Higher alpha to reduce shakiness
+                if self.sensor_data and len(self.sensor_data) > 0:
                     self.dr_filter.calibrate(self.sensor_data[:min(100, len(self.sensor_data))])
                     self.current_data_index = 0
-                    return
-            except Exception as e:
-                print(f"Error loading IMU data from {path}: {e}")
+                return
+        except Exception as e:
+            print(f"Error loading IMU data from {path}: {e}")
 
     def update_main_headset(self, dt):
-        """Update main headset orientation based on IMU data - one sample per frame"""
-        if self.sensor_data and self.dr_filter:
+        """Update main headset orientation based on IMU data - with speedup"""
+        if self.sensor_data and hasattr(self, 'dr_filter') and self.dr_filter:
             if self.current_data_index < len(self.sensor_data):
-            # Calculate how many samples to process this frame
-                samples_to_process = min(
-                    math.ceil(self.samples_per_frame),  # Round up to ensure we use all samples
+                # Calculate how many samples to process this frame based on speedup factor
+                samples_this_frame = min(
+                    math.ceil(self.imu_speedup_factor),
                     len(self.sensor_data) - self.current_data_index
                 )
                 
-                # Process calculated number of samples
-                for _ in range(samples_to_process):
-                    sensor_data = self.sensor_data[self.current_data_index]
-                    self.current_data_index += 1
-                    orientation = self.dr_filter.update(sensor_data)
+                # Process calculated number of samples, but only keep last orientation
+                for _ in range(samples_this_frame):
+                    if self.current_data_index < len(self.sensor_data):
+                        sensor_data = self.sensor_data[self.current_data_index]
+                        self.current_data_index += 1
+                        orientation = self.dr_filter.update(sensor_data)
                 
-                # Apply the latest orientation
+                # Apply the final orientation to the model
                 self.main_headset["model"].model.setQuaternionRotation(orientation)
                 
                 # Store rotation angles
@@ -1489,7 +1490,7 @@ class HeadsetSimulation:
             # Calculate progress percentage for display
             self.imu_progress = min(100, (self.current_data_index / len(self.sensor_data)) * 100)
         else:
-            # Simple rotation if no IMU data
+            # Simple rotation if no IMU data or filter
             self.main_headset["rotation"][0] += dt * 1.0
             self.main_headset["rotation"][1] += dt * 1.5
             self.main_headset["rotation"][2] += dt * 0.8
@@ -1499,8 +1500,8 @@ class HeadsetSimulation:
                 self.main_headset["rotation"][1],
                 self.main_headset["rotation"][2]
             )
-
-    def run(self):
+            
+    def run_old(self):
         """Main simulation loop"""
         clock = pygame.time.Clock()
         running = True
@@ -1547,6 +1548,54 @@ class HeadsetSimulation:
         pygame.quit()
         print(f"Simulation ended after {self.frame_count} frames")
 
+    def run(self):
+        """Main simulation loop"""
+        clock = pygame.time.Clock()
+        running = True
+        
+        print("VR Headset Simulation")
+        print("Controls: B (blur), R (reset), P (pause), V (record), ESC (quit)")
+        
+        # Start recording automatically
+        self.start_recording()
+        
+        while running:
+            dt = min(clock.tick(60) / 1000.0, 0.1)
+            
+            # Track frame time for FPS
+            self.fps_history.append(dt)
+            if len(self.fps_history) > 20:
+                self.fps_history.pop(0)
+            
+            # Handle events
+            running = self.handle_events()
+            
+            # Skip updates if paused
+            if not self.paused:
+                # Update main headset
+                self.update_main_headset(dt)
+                
+                # Update floor headsets
+                self.update_floor_physics(dt)
+            
+            # Render the scene
+            self.render_scene()
+            
+            # Increment frame counter
+            self.frame_count += 1
+            
+            # Exit when we reach target frames or used all IMU data
+            if self.frame_count >= self.target_frames or \
+            (self.sensor_data and self.current_data_index >= len(self.sensor_data)):
+                self.stop_recording()
+                print("Simulation complete")
+                break
+        
+        # Clean up
+        pygame.quit()
+        print(f"Simulation ended after {self.frame_count} frames")
+
+    
 if __name__ == "__main__":
     simulation = HeadsetSimulation()
     simulation.run()
