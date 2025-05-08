@@ -1,48 +1,74 @@
-
 import math
 import numpy as np
 from vector import Vector
 from quaternion import Quaternion
+from collections import deque
 
 class DeadReckoningFilter:
-    def __init__(self, alpha=0.98):
+    def __init__(self, alpha=0.95, beta=0.05, mag_weight=0.02):
         self.orientation = Quaternion(1, 0, 0, 0)  # Identity quaternion
-        self.position = Vector(0, 0, 0)  # Initial position
+        self.position = Vector(0, 0, 0)  # Fixed position (pivot point)
         self.last_time = None
-        self.gyro_bias = (0, 0, 0)  # Calibrated gyroscope bias
-        self.alpha = alpha  # Weight for complementary filter (higher = more gyroscope)
-        self.velocity_x = 0
-        self.velocity_y = 0
-        self.velocity_z = 0
+        
+        # Sensor biases and calibration
+        self.gyro_bias = (0, 0, 0)
+        self.accel_bias = (0, 0, 0)
+        self.mag_bias = (0, 0, 0)
+        self.accel_scale = 1.0
+        self.mag_scale = 1.0
+        
+        self.alpha = alpha  # Gyro weight
+        self.beta = beta    # Accelerometer correction weight
+        self.mag_weight = mag_weight  # Magnetometer correction weight
+        
+        # Rotation state parameters
+        self.rotation_rate = Vector(0, 0, 0)  # Angular velocity
+        self.is_rotating = False
+        self.reference_gravity = (0, 0, 1)  # Expected gravity direction (Z-up)
+        
+        # Buffer for rotation detection
+        self.gyro_buffer = deque(maxlen=10)
+        self.accel_buffer = deque(maxlen=10)
+        
+        # Earth's magnetic field reference
+        self.reference_mag_field = None
+        
+        # Rotation thresholds
+        self.rotation_threshold = 0.1  # rad/s
+        self.stationary_threshold = 0.05  # rad/s
 
     def update(self, sensor_data):
         """
-        Update position and orientation based on sensor readings with
-        gravity-based tilt correction.
+        Update orientation using gyroscope, accelerometer and magnetometer.
+        Optimized for a headset rotating around a fixed pivot point.
         """
         # Initialize time on first update
         if self.last_time is None:
             self.last_time = sensor_data.time
+            self._init_reference_magnetic_field(sensor_data.magnetometer)
             return self.orientation
 
-        # Calculate time delta
+        # Calculate time delta with validation
         dt = sensor_data.time - self.last_time
         self.last_time = sensor_data.time
         
-        # Skip if dt is too small (prevent division by zero)
-        if dt <= 0:
-            return self.orientation
-            
-        # Bias-corrected angular velocity
+        # Skip if dt is invalid
+        if dt <= 0 or dt > 0.1:
+            dt = 0.01  # Use reasonable default
+        
+        # ------------------- DETECT ROTATION STATE -------------------
+        self._update_rotation_state(sensor_data)
+        
+        # ------------------- GYROSCOPE INTEGRATION -------------------
+        # Apply bias correction to gyroscope data
         gyro_x = sensor_data.gyroscope[0] - self.gyro_bias[0]
         gyro_y = sensor_data.gyroscope[1] - self.gyro_bias[1]
         gyro_z = sensor_data.gyroscope[2] - self.gyro_bias[2]
         
-        # -------------------
-        # GYROSCOPE INTEGRATION
-        # -------------------
+        # Store current rotation rate
+        self.rotation_rate = Vector(gyro_x, gyro_y, gyro_z)
         
-        # Create a quaternion representing rotation rate (w=0 for pure rotation)
+        # Create quaternion representing rotation rate
         rotation_quat = Quaternion(0, gyro_x, gyro_y, gyro_z)
         
         # Calculate quaternion derivative (q' = 0.5 * q * omega)
@@ -59,58 +85,63 @@ class DeadReckoningFilter:
             self.orientation.y + q_dot.y * dt,
             self.orientation.z + q_dot.z * dt
         )
-        
-        # Normalize to ensure it remains a unit quaternion
         gyro_orientation.normalize()
         
-        # -------------------
-        # ACCELEROMETER TILT CORRECTION
-        # -------------------
-        
-        # Get accelerometer data
+        # ------------------- ACCELEROMETER TILT CORRECTION -------------------
+        # Get and normalize accelerometer data
         accel_x, accel_y, accel_z = sensor_data.accelerometer
         
-        # Normalize accelerometer data to get unit vector
+        # Apply bias and scale corrections
+        accel_x = (accel_x - self.accel_bias[0]) * self.accel_scale
+        accel_y = (accel_y - self.accel_bias[1]) * self.accel_scale
+        accel_z = (accel_z - self.accel_bias[2]) * self.accel_scale
+        
         accel_magnitude = math.sqrt(accel_x**2 + accel_y**2 + accel_z**2)
+        
+        # Adjust alpha based on rotation state and acceleration
+        # Use more gyro while actively rotating
+        adaptive_alpha = self._get_adaptive_alpha(accel_magnitude)
+        
+        accel_orientation = gyro_orientation  # Default to gyro if acceleration is too low
+        
         if accel_magnitude > 0.1:  # Only apply correction if acceleration is significant
-            # Create normalized acceleration vector in body frame
+            # Create normalized acceleration vector
             accel_normalized_x = accel_x / accel_magnitude
             accel_normalized_y = accel_y / accel_magnitude
             accel_normalized_z = accel_z / accel_magnitude
             
-            # Transform acceleration to global frame using current orientation
+            # Transform acceleration to global frame
             accel_body = Quaternion(0, accel_normalized_x, accel_normalized_y, accel_normalized_z)
-            orientation_conjugate = self._quaternion_conjugate(self.orientation)
+            orientation_conjugate = self._quaternion_conjugate(gyro_orientation)
             accel_world = self._quaternion_multiply(
-                self._quaternion_multiply(self.orientation, accel_body),
+                self._quaternion_multiply(gyro_orientation, accel_body),
                 orientation_conjugate
             )
             
-            # Global reference up vector (gravity points down so negate)
+            # Global reference up vector
             reference_up = Vector(0, 0, 1)  # Z-up coordinate system
             
-            # Calculate tilt axis - cross product of measured up and reference up
-            # (cross product gives vector perpendicular to both)
-            measured_up = Vector(accel_world.x, accel_world.y, accel_world.z).normalize()
-            
             # Negate measured_up since gravity points down but we want up vector
-            measured_up = measured_up * -1
+            measured_up = Vector(accel_world.x, accel_world.y, accel_world.z).normalize() * -1
             
             # Calculate tilt axis (perpendicular to both vectors)
             tilt_axis = measured_up.cross(reference_up)
             
-            # Calculate the angle between the two up vectors using dot product
+            # Calculate angle between the two up vectors
             dot_product = measured_up * reference_up
-            # Clamp dot product to [-1, 1] to avoid floating-point errors
-            dot_product = max(min(dot_product, 1.0), -1.0)
+            dot_product = max(min(dot_product, 1.0), -1.0)  # Clamp to prevent numerical errors
             tilt_angle = math.acos(dot_product)
             
-            # Create a quaternion representing the tilt correction
-            if tilt_axis.norm() > 0.001:  # Avoid issues with zero-length axis
+            # Create tilt correction quaternion
+            if tilt_axis.norm() > 0.001:
                 tilt_axis = tilt_axis.normalize()
                 
-                # Create a rotation quaternion to align measured up with reference up
-                half_angle = tilt_angle * 0.5
+                # Use smaller correction rate during active rotation
+                correction_rate = self.beta
+                if self.is_rotating:
+                    correction_rate *= 0.5  # Reduce tilt correction when rotating
+                
+                half_angle = tilt_angle * correction_rate
                 sin_half = math.sin(half_angle)
                 
                 tilt_quat = Quaternion(
@@ -120,61 +151,238 @@ class DeadReckoningFilter:
                     tilt_axis.z * sin_half
                 )
                 
-                # Compute new orientation from accelerometer
+                # Apply tilt correction
                 accel_orientation = self._quaternion_multiply(tilt_quat, gyro_orientation)
                 accel_orientation.normalize()
-            else:
-                # No significant tilt axis - use gyro orientation
-                accel_orientation = gyro_orientation
-                
-            # -------------------
-            # COMPLEMENTARY FILTER
-            # -------------------
-            
-            # Apply complementary filter to fuse gyro and accelerometer orientations
-            # alpha controls the weight: higher alpha means more gyroscope influence
-            self.orientation = self._quaternion_slerp(accel_orientation, gyro_orientation, self.alpha)
-        else:
-            # If acceleration is too low, just use gyroscope data
-            self.orientation = gyro_orientation
         
-        # Normalize final orientation
+        # ------------------- MAGNETOMETER HEADING CORRECTION -------------------
+        mag_orientation = accel_orientation  # Default to accel+gyro result
+        
+        # Get magnetometer data
+        mag_x, mag_y, mag_z = sensor_data.magnetometer
+        
+        # Apply bias and scale corrections
+        mag_x = (mag_x - self.mag_bias[0]) * self.mag_scale
+        mag_y = (mag_y - self.mag_bias[1]) * self.mag_scale
+        mag_z = (mag_z - self.mag_bias[2]) * self.mag_scale
+        
+        mag_magnitude = math.sqrt(mag_x**2 + mag_y**2 + mag_z**2)
+        
+        if mag_magnitude > 0.1 and self.reference_mag_field:
+            # Normalize magnetometer readings
+            mag_normalized_x = mag_x / mag_magnitude
+            mag_normalized_y = mag_y / mag_magnitude
+            mag_normalized_z = mag_z / mag_magnitude
+            
+            # Transform magnetic field to global frame
+            mag_body = Quaternion(0, mag_normalized_x, mag_normalized_y, mag_normalized_z)
+            mag_world = self._quaternion_multiply(
+                self._quaternion_multiply(accel_orientation, mag_body),
+                self._quaternion_conjugate(accel_orientation)
+            )
+            
+            # Project to horizontal plane (remove pitch and roll influence)
+            mag_horizontal = Vector(mag_world.x, mag_world.y, 0).normalize()
+            ref_horizontal = Vector(self.reference_mag_field[0], self.reference_mag_field[1], 0).normalize()
+            
+            # Cross product gives rotation axis
+            heading_correction_axis = mag_horizontal.cross(ref_horizontal)
+            
+            # Dot product gives cosine of angle
+            heading_dot = mag_horizontal * ref_horizontal
+            heading_dot = max(min(heading_dot, 1.0), -1.0)  # Clamp
+            heading_angle = math.acos(heading_dot)
+            
+            # Create heading correction quaternion
+            if heading_correction_axis.norm() > 0.001:
+                # Use smaller correction during rotation
+                correction_rate = self.mag_weight
+                if self.is_rotating:
+                    correction_rate *= 0.3  # Reduce mag correction when rotating quickly
+                
+                heading_half_angle = heading_angle * correction_rate
+                heading_sin_half = math.sin(heading_half_angle)
+                
+                heading_quat = Quaternion(
+                    math.cos(heading_half_angle),
+                    0,  # Only rotate around Z axis (yaw)
+                    0,
+                    heading_sin_half if heading_correction_axis.z >= 0 else -heading_sin_half
+                )
+                
+                # Apply heading correction
+                mag_orientation = self._quaternion_multiply(heading_quat, accel_orientation)
+                mag_orientation.normalize()
+        
+        # ------------------- COMBINE ORIENTATION ESTIMATES -------------------
+        # Combine gyro, accel and mag orientations with adaptive weights
+        self.orientation = self._quaternion_slerp(mag_orientation, gyro_orientation, adaptive_alpha)
         self.orientation.normalize()
         
         return self.orientation
-    
-    def calibrate(self, sensor_data_list, num_samples=100):
-        """
-        Calibrate the gyroscope bias using a series of readings at rest.
+
+    def _init_reference_magnetic_field(self, mag_data):
+        """Initialize reference magnetic field direction"""
+        mag_x, mag_y, mag_z = mag_data
+        mag_magnitude = math.sqrt(mag_x**2 + mag_y**2 + mag_z**2)
         
-        Args:
-            sensor_data_list (List[SensorData]): List of sensor readings
-            num_samples (int): Number of samples to use for calibration
-        """
+        if mag_magnitude > 0.1:
+            self.reference_mag_field = (
+                mag_x / mag_magnitude,
+                mag_y / mag_magnitude,
+                mag_z / mag_magnitude
+            )
+        else:
+            # Default to magnetic north if readings are too weak
+            self.reference_mag_field = (1, 0, 0)
+
+    def _get_adaptive_alpha(self, accel_magnitude):
+        """Calculate adaptive filter weight based on rotation state and acceleration"""
+        # Calculate gravity deviation
+        accel_deviation = abs(accel_magnitude - 9.81)
+        
+        if self.is_rotating:
+            # During rotation, trust gyro more
+            if accel_deviation > 1.0:
+                return min(0.98, self.alpha + 0.1)  # High acceleration during rotation
+            else:
+                return self.alpha  # Normal rotation
+        else:
+            # When stationary, trust accelerometer more for drift correction
+            if accel_deviation < 0.5:
+                return max(0.9, self.alpha - 0.15)  # Clean acceleration when stationary
+            else:
+                return self.alpha  # Keep default alpha
+    
+    def _update_rotation_state(self, sensor_data):
+        """Detect if headset is rotating based on gyroscope readings"""
+        # Add current readings to buffer
+        self.gyro_buffer.append(sensor_data.gyroscope)
+        
+        # Calculate angular velocity magnitude
+        gyro_x, gyro_y, gyro_z = sensor_data.gyroscope
+        current_rotation = math.sqrt(gyro_x**2 + gyro_y**2 + gyro_z**2)
+        
+        # Calculate average rotation rate from buffer
+        if len(self.gyro_buffer) >= 5:
+            avg_rotation = 0
+            for gyro in self.gyro_buffer:
+                avg_rotation += math.sqrt(gyro[0]**2 + gyro[1]**2 + gyro[2]**2)
+            avg_rotation /= len(self.gyro_buffer)
+            
+            # State transition with hysteresis to prevent rapid toggling
+            if self.is_rotating:
+                # More persistence in rotating state
+                self.is_rotating = avg_rotation > self.stationary_threshold
+            else:
+                # Higher threshold to enter rotating state
+                self.is_rotating = avg_rotation > self.rotation_threshold
+        else:
+            # Not enough samples yet, use current reading
+            self.is_rotating = current_rotation > self.rotation_threshold
+
+    def calibrate(self, sensor_data_list, num_samples=100):
+        """Calibrate sensor biases during a stationary period"""
         if len(sensor_data_list) < num_samples:
             num_samples = len(sensor_data_list)
-            
-        gyro_sum = [0.0, 0.0, 0.0]
+            print(f"Warning: Only {num_samples} samples available for calibration")
         
+        gyro_sum = [0.0, 0.0, 0.0]
+        accel_sum = [0.0, 0.0, 0.0]
+        mag_sum = [0.0, 0.0, 0.0]
+        
+        # Calculate mean values during stationary period
         for i in range(num_samples):
+            # Gyroscope
             gyro_sum[0] += sensor_data_list[i].gyroscope[0]
             gyro_sum[1] += sensor_data_list[i].gyroscope[1]
             gyro_sum[2] += sensor_data_list[i].gyroscope[2]
             
+            # Accelerometer
+            accel_sum[0] += sensor_data_list[i].accelerometer[0]
+            accel_sum[1] += sensor_data_list[i].accelerometer[1]
+            accel_sum[2] += sensor_data_list[i].accelerometer[2]
+            
+            # Magnetometer
+            mag_sum[0] += sensor_data_list[i].magnetometer[0]
+            mag_sum[1] += sensor_data_list[i].magnetometer[1]
+            mag_sum[2] += sensor_data_list[i].magnetometer[2]
+        
+        # Calculate gyroscope bias
         self.gyro_bias = (
             gyro_sum[0] / num_samples,
             gyro_sum[1] / num_samples,
             gyro_sum[2] / num_samples
         )
         
+        # Calculate average accelerometer reading
+        avg_accel = (
+            accel_sum[0] / num_samples,
+            accel_sum[1] / num_samples,
+            accel_sum[2] / num_samples
+        )
+        
+        # Calculate magnitude of average acceleration
+        avg_accel_magnitude = math.sqrt(
+            avg_accel[0]**2 + avg_accel[1]**2 + avg_accel[2]**2
+        )
+        
+        # Calculate accelerometer scale factor
+        self.accel_scale = 9.81 / avg_accel_magnitude if avg_accel_magnitude > 0.1 else 1.0
+        
+        # Calculate normalized gravity direction from average readings
+        normalized_gravity = (
+            avg_accel[0] / avg_accel_magnitude if avg_accel_magnitude > 0.1 else 0.0,
+            avg_accel[1] / avg_accel_magnitude if avg_accel_magnitude > 0.1 else 0.0,
+            avg_accel[2] / avg_accel_magnitude if avg_accel_magnitude > 0.1 else 1.0
+        )
+        
+        # Store gravity direction for reference
+        self.reference_gravity = normalized_gravity
+        
+        # Calculate accelerometer bias
+        expected_gravity = (
+            normalized_gravity[0] * 9.81,
+            normalized_gravity[1] * 9.81,
+            normalized_gravity[2] * 9.81
+        )
+        
+        self.accel_bias = (
+            (avg_accel[0] * self.accel_scale) - expected_gravity[0],
+            (avg_accel[1] * self.accel_scale) - expected_gravity[1],
+            (avg_accel[2] * self.accel_scale) - expected_gravity[2]
+        )
+        
+        # Calculate average magnetometer reading and set reference
+        avg_mag = (
+            mag_sum[0] / num_samples,
+            mag_sum[1] / num_samples,
+            mag_sum[2] / num_samples
+        )
+        
+        avg_mag_magnitude = math.sqrt(
+            avg_mag[0]**2 + avg_mag[1]**2 + avg_mag[2]**2
+        )
+        
+        if avg_mag_magnitude > 0.1:
+            self.reference_mag_field = (
+                avg_mag[0] / avg_mag_magnitude,
+                avg_mag[1] / avg_mag_magnitude,
+                avg_mag[2] / avg_mag_magnitude
+            )
+        
         print(f"Calibrated gyro bias: {self.gyro_bias}")
-    
+        print(f"Calibrated accel bias: {self.accel_bias}")
+        print(f"Reference gravity direction: {self.reference_gravity}")
+        print(f"Reference magnetic field direction: {self.reference_mag_field}")
+        
+    # Helper methods for quaternion operations
     def _quaternion_conjugate(self, q):
-        """Return the conjugate of a quaternion (inverses the imaginary parts)"""
+        """Return the conjugate of a quaternion"""
         return Quaternion(q.w, -q.x, -q.y, -q.z)
     
     def _quaternion_multiply(self, q1, q2):
-        """Multiply two quaternions (q1 * q2)"""
+        """Multiply two quaternions"""
         return Quaternion(
             q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z,
             q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,
@@ -183,21 +391,9 @@ class DeadReckoningFilter:
         )
     
     def _quaternion_slerp(self, q1, q2, t):
-        """
-        Spherical linear interpolation between quaternions.
-        
-        Args:
-            q1: Starting quaternion
-            q2: Ending quaternion
-            t: Interpolation parameter (0-1), higher means more q2
-        
-        Returns:
-            Interpolated quaternion
-        """
-        # Calculate the dot product
+        """Spherical linear interpolation between quaternions"""
         dot = q1.w * q2.w + q1.x * q2.x + q1.y * q2.y + q1.z * q2.z
         
-        # If quaternions are very close, just use linear interpolation
         if abs(dot) > 0.9995:
             result = Quaternion(
                 q1.w * (1-t) + q2.w * t,
@@ -208,22 +404,16 @@ class DeadReckoningFilter:
             result.normalize()
             return result
         
-        # Clamp dot product to valid domain of acos
         dot = max(min(dot, 1.0), -1.0)
-        
-        # Calculate the angle between quaternions
         theta_0 = math.acos(dot)
         sin_theta_0 = math.sin(theta_0)
         
-        # Calculate interpolation factors
         theta = theta_0 * t
         sin_theta = math.sin(theta)
         
-        # Calculate coefficients
         s1 = math.sin(theta_0 - theta) / sin_theta_0
         s2 = math.sin(theta) / sin_theta_0
         
-        # Perform the interpolation
         result = Quaternion(
             s1 * q1.w + s2 * q2.w,
             s1 * q1.x + s2 * q2.x,
@@ -234,12 +424,7 @@ class DeadReckoningFilter:
         return result
     
     def get_euler_angles(self):
-        """
-        Convert current orientation quaternion to Euler angles.
-        
-        Returns:
-            Tuple[float, float, float]: Roll, pitch, yaw in radians
-        """
+        """Convert current orientation quaternion to Euler angles"""
         # Roll (x-axis rotation)
         sinr_cosp = 2.0 * (self.orientation.w * self.orientation.x + 
                           self.orientation.y * self.orientation.z)
@@ -251,7 +436,7 @@ class DeadReckoningFilter:
         sinp = 2.0 * (self.orientation.w * self.orientation.y - 
                      self.orientation.z * self.orientation.x)
         if abs(sinp) >= 1:
-            pitch = math.copysign(math.pi / 2, sinp)  # Use 90 degrees if out of range
+            pitch = math.copysign(math.pi / 2, sinp)
         else:
             pitch = math.asin(sinp)
             

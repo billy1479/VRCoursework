@@ -15,8 +15,6 @@ class DepthOfFieldEffect:
     
     def process(self, image, z_buffer, width, height):
         """Apply depth of field effect to left half of screen only"""
-        # In the provided code snippet, the line `result = Image(width, height, Color(0, 0, 0, 255))`
-        # is creating a new image object named `result`.
         result = Image(width, height, Color(0, 0, 0, 255))
         
         # Create blur map based on depth
@@ -31,7 +29,7 @@ class DepthOfFieldEffect:
                     if blur_radius <= 0.5:
                         self._copy_pixel(image, result, x, y)
                     else:
-                        self._apply_blur(image, result, x, y, int(blur_radius))
+                        self._apply_gaussian_blur(image, result, x, y, int(blur_radius))
                 # Right half: direct copy (no DoF)
                 else:
                     self._copy_pixel(image, result, x, y)
@@ -68,6 +66,30 @@ class DepthOfFieldEffect:
         
         return blur_map
     
+    def _create_gaussian_kernel(self, radius):
+        """Generate a 2D Gaussian kernel for the given radius"""
+        size = 2 * radius + 1
+        kernel = np.zeros((size, size))
+        
+        # Standard deviation based on radius
+        sigma = radius / 2.0
+        
+        # Compute Gaussian kernel
+        for y in range(size):
+            for x in range(size):
+                # Calculate distance from center
+                dx = x - radius
+                dy = y - radius
+                distance_squared = dx * dx + dy * dy
+                
+                # Gaussian function
+                kernel[y, x] = np.exp(-distance_squared / (2 * sigma * sigma))
+        
+        # Normalize kernel so weights sum to 1
+        kernel = kernel / np.sum(kernel)
+        
+        return kernel
+    
     def _copy_pixel(self, source, dest, x, y):
         """Copy a pixel from source to destination image"""
         idx = self._get_pixel_index(source, x, y)
@@ -78,30 +100,49 @@ class DepthOfFieldEffect:
             a = source.buffer[idx + 3]
             dest.setPixel(x, y, Color(r, g, b, a))
     
-    def _apply_blur(self, source, dest, x, y, blur_radius):
-        """Apply a simple box blur with the specified radius"""
+    def _apply_gaussian_blur(self, source, dest, x, y, blur_radius):
+        """Apply Gaussian blur with the specified radius"""
         width, height = source.width, source.height
-        r_sum, g_sum, b_sum = 0, 0, 0
-        count = 0
         
-        # Define blur range
+        # Limit blur radius to reasonable range
         radius = max(1, min(5, int(blur_radius)))
         
-        # Sample pixels in a square around the center
-        for by in range(max(0, y - radius), min(height, y + radius + 1)):
-            for bx in range(max(0, x - radius), min(width, x + radius + 1)):
+        # Create Gaussian kernel
+        kernel = self._create_gaussian_kernel(radius)
+        
+        # Initialize color accumulators
+        r_sum, g_sum, b_sum = 0.0, 0.0, 0.0
+        weight_sum = 0.0
+        
+        # Apply kernel to pixels in a square around the center
+        for ky in range(kernel.shape[0]):
+            by = y - radius + ky  # source image y-coordinate
+            
+            if by < 0 or by >= height:
+                continue
+                
+            for kx in range(kernel.shape[1]):
+                bx = x - radius + kx  # source image x-coordinate
+                
+                if bx < 0 or bx >= width:
+                    continue
+                    
+                # Get weight from kernel
+                weight = kernel[ky, kx]
+                
+                # Get pixel color
                 idx = self._get_pixel_index(source, bx, by)
                 if idx + 2 < len(source.buffer):
-                    r_sum += source.buffer[idx]
-                    g_sum += source.buffer[idx + 1]
-                    b_sum += source.buffer[idx + 2]
-                    count += 1
+                    r_sum += source.buffer[idx] * weight
+                    g_sum += source.buffer[idx + 1] * weight
+                    b_sum += source.buffer[idx + 2] * weight
+                    weight_sum += weight
         
-        # Calculate average
-        if count > 0:
-            r = int(r_sum / count)
-            g = int(g_sum / count)
-            b = int(b_sum / count)
+        # Calculate weighted average
+        if weight_sum > 0:
+            r = int(r_sum / weight_sum)
+            g = int(g_sum / weight_sum)
+            b = int(b_sum / weight_sum)
             
             # Get alpha from original pixel
             idx = self._get_pixel_index(source, x, y)

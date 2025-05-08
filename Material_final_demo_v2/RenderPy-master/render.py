@@ -469,10 +469,10 @@ class HeadsetSimulation:
                     headset.velocity.y = abs(headset.velocity.y) * 0.5
                     
                     # Apply friction on floor
-                    horizontal_speed_squared = headset.velocity.x**2 + headset.velocity.z**2
-                    if horizontal_speed_squared > 0.001:
-                        headset.velocity.x *= self.friction_coefficient
-                        headset.velocity.z *= self.friction_coefficient
+                    # horizontal_speed_squared = headset.velocity.x**2 + headset.velocity.z**2
+                    # if horizontal_speed_squared > 0.001:
+                    headset.velocity.x *= self.friction_coefficient
+                    headset.velocity.z *= self.friction_coefficient
                 else:
                     # Apply gravity
                     headset.velocity.y -= 9.8 * fixed_dt
